@@ -78,6 +78,69 @@ describe("createTelegramDraftStream", () => {
     expect(api.editMessageText).toHaveBeenCalledWith(123, 17, "Hello again");
   });
 
+  it("retains prior preview and starts a new message for non-monotonic updates when draft retention is enabled", async () => {
+    const previous = process.env.OPENCLAW_RETAIN_STREAM_DRAFTS;
+    process.env.OPENCLAW_RETAIN_STREAM_DRAFTS = "1";
+    try {
+      const api = createMockDraftApi();
+      api.sendMessage
+        .mockResolvedValueOnce({ message_id: 17 })
+        .mockResolvedValueOnce({ message_id: 42 });
+      const onSupersededPreview = vi.fn();
+      const stream = createDraftStream(api, { onSupersededPreview });
+
+      stream.update("Working on a longer partial draft");
+      await stream.flush();
+      stream.update("Short final");
+      await stream.flush();
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(2);
+      expect(api.sendMessage).toHaveBeenNthCalledWith(
+        1,
+        123,
+        "Working on a longer partial draft",
+        undefined,
+      );
+      expect(api.sendMessage).toHaveBeenNthCalledWith(2, 123, "Short final", undefined);
+      expect(api.editMessageText).not.toHaveBeenCalledWith(123, 17, "Short final");
+      expect(api.deleteMessage).not.toHaveBeenCalled();
+      expect(onSupersededPreview).toHaveBeenCalledWith({
+        messageId: 17,
+        textSnapshot: "Working on a longer partial draft",
+        parseMode: undefined,
+        visibleSinceMs: expect.any(Number),
+        retain: true,
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENCLAW_RETAIN_STREAM_DRAFTS;
+      } else {
+        process.env.OPENCLAW_RETAIN_STREAM_DRAFTS = previous;
+      }
+    }
+  });
+
+  it("keeps normal edit behavior for non-monotonic updates when draft retention is disabled", async () => {
+    const previous = process.env.OPENCLAW_RETAIN_STREAM_DRAFTS;
+    delete process.env.OPENCLAW_RETAIN_STREAM_DRAFTS;
+    try {
+      const api = createMockDraftApi();
+      const stream = createDraftStream(api);
+
+      stream.update("Working on a longer partial draft");
+      await stream.flush();
+      stream.update("Short final");
+      await stream.flush();
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      expect(api.editMessageText).toHaveBeenCalledWith(123, 17, "Short final");
+    } finally {
+      if (previous !== undefined) {
+        process.env.OPENCLAW_RETAIN_STREAM_DRAFTS = previous;
+      }
+    }
+  });
+
   it("waits for in-flight updates before final flush edit", async () => {
     let resolveSend: ((value: { message_id: number }) => void) | undefined;
     const firstSend = new Promise<{ message_id: number }>((resolve) => {

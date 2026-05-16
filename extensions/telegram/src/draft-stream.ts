@@ -51,6 +51,26 @@ function renderTelegramDraftPreview(
   return renderText?.(trimmed) ?? { text: trimmed };
 }
 
+function shouldRetainStreamDrafts(): boolean {
+  const value = process.env.OPENCLAW_RETAIN_STREAM_DRAFTS?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function isNonMonotonicPreviewUpdate(params: {
+  previousText: string;
+  nextText: string;
+  previousParseMode?: "HTML";
+  nextParseMode?: "HTML";
+}): boolean {
+  if (!params.previousText) {
+    return false;
+  }
+  if (params.previousParseMode !== params.nextParseMode) {
+    return true;
+  }
+  return !params.nextText.startsWith(params.previousText);
+}
+
 function findTelegramDraftChunkLength(
   text: string,
   maxChars: number,
@@ -256,6 +276,29 @@ export function createTelegramDraftStream(params: {
     }
     if (renderedText === lastSentText && renderedParseMode === lastSentParseMode) {
       return true;
+    }
+    if (
+      shouldRetainStreamDrafts() &&
+      typeof streamMessageId === "number" &&
+      isNonMonotonicPreviewUpdate({
+        previousText: lastSentText,
+        nextText: renderedText,
+        previousParseMode: lastSentParseMode,
+        nextParseMode: renderedParseMode,
+      })
+    ) {
+      const supersededMessageId = streamMessageId;
+      const supersededTextSnapshot = lastSentText;
+      const supersededParseMode = lastSentParseMode;
+      const supersededVisibleSinceMs = streamVisibleSinceMs;
+      resetStreamToNewMessage({ keepPending: true, resetOffset: true });
+      params.onSupersededPreview?.({
+        messageId: supersededMessageId,
+        textSnapshot: supersededTextSnapshot,
+        parseMode: supersededParseMode,
+        visibleSinceMs: supersededVisibleSinceMs,
+        retain: true,
+      });
     }
     const sendGeneration = generation;
 
