@@ -919,6 +919,7 @@ export const dispatchTelegramMessage = async ({
   let streamToolProgressLines: Array<string | ChannelProgressDraftLine> = [];
   let lastAnswerPartialText = "";
   let activeAnswerDraftIsToolProgressOnly = false;
+  let progressDraftShownThisDispatch = false;
   function resetAnswerToolProgressDraft() {
     activeAnswerDraftIsToolProgressOnly = false;
   }
@@ -944,10 +945,18 @@ export const dispatchTelegramMessage = async ({
     if (!streamText || streamText === answerLane.lastPartialText) {
       return false;
     }
+    if (
+      progressDraftShownThisDispatch &&
+      !answerLane.hasStreamedMessage &&
+      typeof answerLane.stream.messageId() !== "number"
+    ) {
+      return;
+    }
     await prepareAnswerLaneForToolProgress();
     answerLane.lastPartialText = streamText;
     answerLane.hasStreamedMessage = true;
     answerLane.finalized = false;
+    progressDraftShownThisDispatch = true;
     answerLane.stream.update(streamText);
     if (options?.flush) {
       await answerLane.stream.flush();

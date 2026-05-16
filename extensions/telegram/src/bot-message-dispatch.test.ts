@@ -2281,6 +2281,41 @@ describe("dispatchTelegramMessage draft streaming", () => {
     await run;
   });
 
+  it("does not create repeated label-only Telegram progress drafts after intermediate final text", async () => {
+    vi.useFakeTimers();
+    const draftStream = createSequencedDraftStream(2001);
+    createTelegramDraftStream.mockReturnValue(draftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await vi.advanceTimersByTimeAsync(5_000);
+        await dispatcherOptions.deliver({ text: "Still checking cache" }, { kind: "final" });
+        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await dispatcherOptions.deliver({ text: "Cache checked" }, { kind: "final" });
+        return { queuedFinal: true };
+      },
+    );
+
+    try {
+      await dispatchWithContext({
+        context: createContext(),
+        streamMode: "progress",
+        telegramCfg: {
+          streaming: {
+            mode: "progress",
+            progress: { label: "Working", toolProgress: false },
+          },
+        },
+      });
+
+      expect(draftStream.update.mock.calls.map(([text]) => text)).toEqual(["Working"]);
+      expect(draftStream.forceNewMessage).toHaveBeenCalledTimes(1);
+      expectDeliveredReply(0, { text: "Still checking cache" });
+      expectDeliveredReply(0, { text: "Cache checked" }, 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders Telegram progress drafts before slow status reactions resolve", async () => {
     const draftStream = createSequencedDraftStream(2001);
     createTelegramDraftStream.mockReturnValue(draftStream);
