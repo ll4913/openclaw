@@ -1662,6 +1662,89 @@ describe("tryDispatchAcpReply", () => {
     );
   });
 
+  it("does not emit resolved identity notices after the ACP assistant produced visible output", async () => {
+    const canonicalSessionKey = "agent:main:main";
+    managerMocks.resolveSession.mockReturnValue({
+      kind: "ready",
+      sessionKey: canonicalSessionKey,
+      meta: createAcpSessionMeta({
+        identity: {
+          state: "pending",
+          source: "ensure",
+          lastUpdatedAt: Date.now(),
+          acpxRecordId: "rec-main",
+        },
+      }),
+    });
+    bindingServiceMocks.listBySession.mockImplementation((targetSessionKey: string) =>
+      targetSessionKey === canonicalSessionKey
+        ? [
+            {
+              bindingId: "discord:default:thread-1",
+              targetSessionKey: canonicalSessionKey,
+              targetKind: "session",
+              conversation: {
+                channel: "discord",
+                accountId: "default",
+                conversationId: "thread-1",
+              },
+              status: "active",
+              boundAt: 0,
+            },
+          ]
+        : [],
+    );
+    sessionMetaMocks.readAcpSessionEntry.mockImplementation(
+      (params: { sessionKey: string; cfg?: OpenClawConfig }) =>
+        params.sessionKey === canonicalSessionKey
+          ? {
+              cfg: params.cfg ?? createAcpTestConfig(),
+              storePath: "/tmp/openclaw-session-store.json",
+              sessionKey: canonicalSessionKey,
+              storeSessionKey: canonicalSessionKey,
+              acp: createAcpSessionMeta({
+                identity: {
+                  state: "resolved",
+                  source: "status",
+                  lastUpdatedAt: Date.now(),
+                  acpxSessionId: "acpx-main",
+                },
+              }),
+            }
+          : null,
+    );
+    mockVisibleTextTurn("Useful ACP answer.");
+    const { dispatcher } = createDispatcher();
+
+    await runDispatch({
+      bodyForAgent: "test",
+      dispatcher,
+      sessionKeyOverride: canonicalSessionKey,
+    });
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+    expect(dispatcherCall(dispatcher.sendFinalReply, 0).text).toBe("Useful ACP answer.");
+    expect(dispatcherCall(dispatcher.sendFinalReply, 0).text).not.toContain(
+      "Session ids resolved.",
+    );
+  });
+
+  it("surfaces a visible fallback when an ACP turn completes without output", async () => {
+    setReadyAcpResolution();
+    managerMocks.runTurn.mockResolvedValue(undefined);
+    const { dispatcher } = createDispatcher();
+
+    const result = await runDispatch({
+      bodyForAgent: "test",
+      dispatcher,
+    });
+
+    expect(result?.queuedFinal).toBe(true);
+    expect(dispatcherCall(dispatcher.sendFinalReply, 0).text).toContain(
+      "completed without visible output",
+    );
+  });
+
   it("does not add a fallback when routed ACP text was already delivered as final", async () => {
     setReadyAcpResolution();
     ttsMocks.resolveTtsConfig.mockReturnValue({ mode: "final" });
@@ -1936,6 +2019,45 @@ describe("tryDispatchAcpReply", () => {
     expect(result?.queuedFinal).toBe(true);
   });
 
+  it("finalizes live Telegram ACP block output even when block preview delivery reports success", async () => {
+    setReadyAcpResolution();
+    const cfg = createAcpTestConfig({
+      acp: {
+        enabled: true,
+        stream: {
+          deliveryMode: "live",
+          coalesceIdleMs: 0,
+          maxChunkChars: 64,
+        },
+      },
+    });
+    managerMocks.runTurn.mockImplementation(
+      async ({ onEvent }: { onEvent: (event: unknown) => Promise<void> }) => {
+        await onEvent({
+          type: "text_delta",
+          text: "TELEGRAM_LIVE_ACP_OK",
+          tag: "agent_message_chunk",
+        });
+        await onEvent({ type: "done" });
+      },
+    );
+
+    const { dispatcher } = createDispatcher();
+    const result = await runDispatch({
+      bodyForAgent: "reply",
+      cfg,
+      dispatcher,
+      ctxOverrides: {
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+    });
+
+    expect(dispatcherCall(dispatcher.sendBlockReply, 0).text).toBe("TELEGRAM_LIVE_ACP_OK");
+    expect(dispatcherCall(dispatcher.sendFinalReply, 0).text).toBe("TELEGRAM_LIVE_ACP_OK");
+    expect(result?.queuedFinal).toBe(true);
+  });
+
   it("honors the configured default account for ACP projector chunking when AccountId is omitted", async () => {
     setReadyAcpResolution();
     const cfg = createAcpTestConfig({
@@ -2005,7 +2127,7 @@ describe("tryDispatchAcpReply", () => {
     expect(routeMocks.routeReply).toHaveBeenCalledTimes(1);
   });
 
-  it("skips final TTS and fallback when no block text was accumulated", async () => {
+  it("sends a visible fallback without final TTS when no block text was accumulated", async () => {
     setReadyAcpResolution();
     ttsMocks.resolveTtsConfig.mockReturnValue({ mode: "final" });
 
@@ -2023,8 +2145,9 @@ describe("tryDispatchAcpReply", () => {
     });
 
     expect(result?.counts.block).toBe(0);
-    expect(result?.counts.final).toBe(0);
-    expect(routeMocks.routeReply).not.toHaveBeenCalled();
+    expect(result?.counts.final).toBe(1);
+    expect(routeMocks.routeReply).toHaveBeenCalledTimes(1);
+    expect(routePayload(0).text).toContain("completed without visible output");
     expect(ttsMocks.maybeApplyTtsToPayload).not.toHaveBeenCalled();
   });
 });

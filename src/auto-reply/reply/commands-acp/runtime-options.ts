@@ -148,12 +148,16 @@ export async function handleAcpStatusAction(
       const lines = [
         "ACP status:",
         "-----",
-        `session: ${status.sessionKey}`,
-        `backend: ${status.backend}`,
-        `agent: ${status.agent}`,
+        formatStateLine(status.state, runtimeDetails, runtimeSummary),
+        `Agent: ${status.agent} via ${status.backend}`,
         ...sessionIdentifierLines,
-        `sessionMode: ${status.mode}`,
-        `state: ${status.state}`,
+        ...(model ? [`Model: ${model}`] : []),
+        ...(thinking ? [`Thinking: ${thinking}`] : []),
+        ...(cwd ? [`Cwd: ${cwd}`] : []),
+        `Mode: ${status.mode}`,
+        ...(runtimeLine ? [runtimeLine] : []),
+        `Last active: ${formatTimestamp(status.lastActivityAt)}`,
+        `Session: ${formatShortSessionKey(status.sessionKey)}`,
         ...(linkedTask
           ? [
               `taskId: ${linkedTask.taskId}`,

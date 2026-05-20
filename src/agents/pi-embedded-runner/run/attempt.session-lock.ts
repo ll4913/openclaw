@@ -108,6 +108,8 @@ type SessionFileFingerprint =
       ctimeNs: bigint;
     };
 
+const MAX_APPEND_ONLY_FENCE_BYTES = 5 * 1024 * 1024;
+
 function sameSessionFileFingerprint(
   left: SessionFileFingerprint | undefined,
   right: SessionFileFingerprint,
@@ -125,6 +127,60 @@ function sameSessionFileFingerprint(
     left.mtimeNs === right.mtimeNs &&
     left.ctimeNs === right.ctimeNs
   );
+}
+
+function isAllowedPromptAppendEntry(entry: unknown): boolean {
+  const record = entry as { type?: unknown; message?: { role?: unknown } } | null;
+  if (!record || typeof record !== "object") {
+    return false;
+  }
+  if (record.type !== "message") {
+    return record.type !== "session";
+  }
+  const role = record.message?.role;
+  return role === "assistant" || role === "tool" || role === "toolResult";
+}
+
+async function isAppendOnlyPromptAdvance(params: {
+  previous: SessionFileFingerprint | undefined;
+  current: SessionFileFingerprint;
+  sessionFile: string;
+}): Promise<boolean> {
+  const previous = params.previous;
+  if (!previous?.exists || !params.current.exists) {
+    return false;
+  }
+  if (previous.dev !== params.current.dev || previous.ino !== params.current.ino) {
+    return false;
+  }
+  if (params.current.size < previous.size) {
+    return false;
+  }
+  const appendedBytes = params.current.size - previous.size;
+  if (appendedBytes === 0n) {
+    return true;
+  }
+  if (
+    appendedBytes > BigInt(MAX_APPEND_ONLY_FENCE_BYTES) ||
+    previous.size > BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    return false;
+  }
+  const content = await fs.readFile(params.sessionFile);
+  const appendedText = content.subarray(Number(previous.size)).toString("utf8");
+  const lines = appendedText.split("\n").filter((line) => line.trim().length > 0);
+  for (const line of lines) {
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    if (!isAllowedPromptAppendEntry(entry)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function readSessionFileFingerprint(sessionFile: string): Promise<SessionFileFingerprint> {
@@ -283,6 +339,16 @@ export async function createEmbeddedAttemptSessionLockController(params: {
     }
     const current = await readSessionFileFingerprint(params.lockOptions.sessionFile);
     if (!sameSessionFileFingerprint(fenceFingerprint, current)) {
+      if (
+        await isAppendOnlyPromptAdvance({
+          previous: fenceFingerprint,
+          current,
+          sessionFile: params.lockOptions.sessionFile,
+        })
+      ) {
+        fenceFingerprint = current;
+        return;
+      }
       takeoverDetected = true;
       throw new EmbeddedAttemptSessionTakeoverError(params.lockOptions.sessionFile);
     }

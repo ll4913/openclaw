@@ -38,6 +38,24 @@ describe("redactTranscriptMessage", () => {
     expect(text).toContain("end");
   });
 
+  it("preserves image base64 data while redacting sibling text", () => {
+    const imageData =
+      "VAvl3JEvBvqrrQx2FHNCgxbXYXNsnDs/GgQoZwIvS8gZTCgwRDjQ3wLTaIrn8EyAN6RBo6owCjQ7SIzrjuWNE4g4v5YmI/ZQvVOFnHE4k8nTqjXyXylBDXmz";
+    const msg = {
+      role: "user",
+      content: [
+        { type: "text", text: "key is sk-abcdef1234567890xyz" },
+        { type: "image", data: imageData, mimeType: "image/jpeg" },
+      ],
+    } as unknown as AgentMessage;
+
+    const result = redactTranscriptMessage(msg, cfg("tools"));
+    const content = msgContent(result) as Array<{ type: string; text?: string; data?: string }>;
+    expect(content[0].text).not.toContain("sk-abcdef1234567890xyz");
+    expect(content[1].data).toBe(imageData);
+    expect(content[1].data).not.toContain("…");
+  });
+
   it("redacts thinking block", () => {
     const msg = {
       role: "assistant",

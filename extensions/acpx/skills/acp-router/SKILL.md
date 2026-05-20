@@ -67,6 +67,16 @@ These defaults match current acpx built-in aliases.
 
 If policy rejects the chosen id, report the policy error clearly and ask for the allowed ACP agent id.
 
+## Telegram command targeting notes
+
+OpenClaw Telegram native commands can be routed in busy chats with multiple bots:
+
+- `/acp@bot_username ...` explicitly targets the named bot; other OpenClaw bots should ignore it.
+- `@bot_username /acp ...` is normalized as an ACP command for the addressed bot.
+- Bare `/acp ...` in a group may be skipped when command targeting logic cannot prove the current bot is the intended recipient.
+
+When diagnosing "ACP did not respond" in Telegram groups, first check whether the command was targeted at a different bot username. Prefer explicit `/acp@<bot_username>` when multiple OpenClaw Telegram accounts are present.
+
 ## OpenClaw ACP runtime path
 
 Required behavior:
@@ -80,6 +90,10 @@ Required behavior:
 4. Put requested work in `task` so the ACP session gets it immediately.
 5. Set `agentId` explicitly unless ACP default agent is known.
 6. Do not ask user to run slash commands or CLI when this path works directly.
+7. For status/control UX, expect `/focus`, `/help`, `/status`, and `/unfocus` to be ACP command-bypass candidates when the conversation is bound to ACP.
+8. Bound ACP dispatch should keep final assistant output visible and avoid duplicate resolved-identity notices when the ACP turn already produced assistant text.
+
+Status output note: ACP status is intentionally human-readable. It may include State, Agent/backend, Model, Thinking, Cwd, Mode, runtime pid/open-state, Last active, short Session id, linked task info, runtime options, capabilities, and sanitized runtime errors/details.
 
 Example:
 
@@ -212,7 +226,7 @@ Defaults are:
 
 - `openclaw -> openclaw acp`
 - `claude -> bundled @agentclientprotocol/claude-agent-acp@0.32.0`
-- `codex -> bundled @zed-industries/codex-acp@0.13.0 through OpenClaw's isolated CODEX_HOME wrapper`
+- `codex -> bundled @zed-industries/codex-acp@0.14.0 through OpenClaw's isolated CODEX_HOME wrapper`
 - `copilot -> copilot --acp --stdio`
 - `cursor -> cursor-agent acp`
 - `droid -> droid exec --output-format acp`
@@ -227,6 +241,10 @@ Defaults are:
 
 If `~/.acpx/config.json` overrides `agents`, those overrides replace defaults.
 If your local Cursor install still exposes ACP as `agent acp`, set that as the `cursor` agent override explicitly.
+
+### Runtime compatibility notes
+
+Recent local OpenClaw ACP enhancements also preserve image payloads through Anthropic transport/transcript redaction and tolerate safe append-only ACP session transcript growth (assistant/tool/toolResult entries) to reduce false session-lock conflicts. Invalid base64 image payloads are replaced with an explicit omitted-image placeholder rather than crashing transport conversion.
 
 ### Failure handling
 

@@ -493,6 +493,7 @@ export async function dispatchReplyFromConfig(
 
   const initialSessionStoreEntry = resolveSessionStoreLookup(ctx, cfg);
   const boundAcpDispatchSessionKey = resolveBoundAcpDispatchSessionKey({ ctx, cfg });
+  const isBoundAcpDispatch = Boolean(boundAcpDispatchSessionKey);
   const acpDispatchSessionKey =
     boundAcpDispatchSessionKey ?? initialSessionStoreEntry.sessionKey ?? sessionKey;
   const markProgress = () => {
@@ -831,7 +832,7 @@ export async function dispatchReplyFromConfig(
   const sourceReplyPolicy = resolveSourceReplyVisibilityPolicy({
     cfg,
     ctx,
-    requested: params.replyOptions?.sourceReplyDeliveryMode,
+    requested: isBoundAcpDispatch ? "automatic" : params.replyOptions?.sourceReplyDeliveryMode,
     strictMessageToolOnly: ctx.InboundEventKind === "room_event",
     sendPolicy,
     suppressAcpChildUserDelivery,

@@ -42,6 +42,7 @@ import {
   type TelegramThreadSpec,
 } from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
+import { normalizeTelegramMentionPrefixedCommandBody } from "./command-targeting.js";
 import { resolveTelegramGroupPromptSettings } from "./group-config-helpers.js";
 import type { TelegramReplyChainEntry } from "./message-cache.js";
 
@@ -398,9 +399,11 @@ export async function buildTelegramInboundContextPayload(params: {
     groupConfig,
     topicConfig,
   });
-  const commandBody = normalizeCommandBody(rawBody, {
-    botUsername: normalizeOptionalLowercaseString(primaryCtx.me?.username),
-  });
+  const botUsername = normalizeOptionalLowercaseString(primaryCtx.me?.username);
+  const commandBody = normalizeCommandBody(
+    normalizeTelegramMentionPrefixedCommandBody(rawBody, botUsername),
+    { botUsername },
+  );
   const inboundHistory =
     isGroup && historyKey && historyLimit > 0
       ? channelHistory.buildInboundHistory({

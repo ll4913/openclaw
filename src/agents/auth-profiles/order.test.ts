@@ -298,6 +298,42 @@ describe("resolveAuthProfileOrder", () => {
     expect(order).toEqual([]);
   });
 
+  it("falls back to a valid runtime Codex profile when explicit Codex order is tokenless", async () => {
+    const store: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        "openai-codex:stale": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "",
+          refresh: "",
+          expires: Date.now() + 60_000,
+        },
+        "openai-codex:default": {
+          type: "oauth",
+          provider: "openai-codex",
+          access: "runtime-access",
+          refresh: "runtime-refresh",
+          expires: Date.now() + 60_000,
+        },
+      },
+    };
+
+    const order = resolveAuthProfileOrder({
+      cfg: {
+        auth: {
+          order: {
+            "openai-codex": ["openai-codex:stale"],
+          },
+        },
+      },
+      store,
+      provider: "openai-codex",
+    });
+
+    expect(order).toEqual(["openai-codex:default"]);
+  });
+
   it("preserves native Codex profiles before OpenAI alias API-key order", async () => {
     const store: AuthProfileStore = {
       version: 1,

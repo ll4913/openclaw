@@ -42,6 +42,7 @@ import {
 } from "./bot/body-helpers.js";
 import { buildTelegramGroupPeerId, buildTelegramInboundOriginTarget } from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
+import { normalizeTelegramMentionPrefixedCommandBody } from "./command-targeting.js";
 import { isTelegramForumServiceMessage } from "./forum-service-message.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 
@@ -182,9 +183,13 @@ export async function resolveTelegramInboundBody(params: {
   const botUsername = normalizeOptionalLowercaseString(primaryCtx.me?.username);
   const mentionRegexes = buildMentionRegexes(cfg, routeAgentId);
   const messageTextParts = getTelegramTextParts(msg);
+  const commandDetectionText = normalizeTelegramMentionPrefixedCommandBody(
+    messageTextParts.text,
+    botUsername,
+  );
   const allowForCommands = isGroup ? effectiveGroupAllow : effectiveDmAllow;
   const useAccessGroups = cfg.commands?.useAccessGroups !== false;
-  const hasControlCommandInMessage = hasControlCommand(messageTextParts.text, cfg, {
+  const hasControlCommandInMessage = hasControlCommand(commandDetectionText, cfg, {
     botUsername,
   });
   const commandGate = await resolveTelegramCommandIngressAuthorization({
