@@ -123,6 +123,7 @@ export function createNativeCommandsHarness(params?: {
   nativeEnabled?: boolean;
   groupConfig?: Record<string, unknown>;
   resolveGroupPolicy?: () => ChannelGroupPolicy;
+  accountId?: string;
 }): NativeCommandHarness {
   const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
   const sendMessage: AnyAsyncMock = vi.fn(async () => undefined);
@@ -151,7 +152,7 @@ export function createNativeCommandsHarness(params?: {
     bot,
     cfg: params?.cfg ?? ({} as OpenClawConfig),
     runtime: params?.runtime ?? ({ log } as unknown as RuntimeEnv),
-    accountId: "default",
+    accountId: params?.accountId ?? "default",
     telegramCfg: params?.telegramCfg ?? ({} as TelegramAccountConfig),
     allowFrom: params?.allowFrom ?? [],
     groupAllowFrom: params?.groupAllowFrom ?? [],
@@ -184,10 +185,14 @@ export function createTelegramGroupCommandContext(params?: {
   senderId?: number;
   username?: string;
   threadId?: number;
+  text?: string;
+  botUsername?: string;
 }) {
+  const text = params?.text;
   return {
     message: {
       chat: { id: -100999, type: "supergroup", is_forum: true },
+      text,
       from: {
         id: params?.senderId ?? 12345,
         username: params?.username ?? "testuser",
@@ -196,8 +201,13 @@ export function createTelegramGroupCommandContext(params?: {
       message_id: 1,
       date: 1700000000,
     },
-    match: "",
+    me: { username: params?.botUsername ?? "openclaw_bot" },
+    match: text?.replace(/^\/\S+\s*/, "") ?? "",
   };
+}
+
+export function getNativeCommandDispatchMock() {
+  return replyPipelineMocks.dispatchReplyWithBufferedBlockDispatcher;
 }
 
 export function findNotAuthorizedCalls(sendMessage: AnyAsyncMock) {

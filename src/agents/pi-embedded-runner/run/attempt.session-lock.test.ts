@@ -195,6 +195,57 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(events).toEqual(["acquire-1", "release", "events-drained", "acquire-2", "release"]);
   });
 
+  it("allows append-only assistant prompt writes before post-prompt session writes", async () => {
+    const sessionFile = await createTempSessionFile();
+    const acquireSessionWriteLock = vi.fn(async () => ({ release: vi.fn(async () => {}) }));
+    const controller = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock,
+      lockOptions: { ...lockOptions, sessionFile },
+    });
+
+    await controller.releaseForPrompt();
+    await fs.appendFile(
+      sessionFile,
+      '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n',
+      "utf8",
+    );
+
+    await controller.withSessionWriteLock(async () => {
+      await fs.appendFile(sessionFile, '{"type":"custom","customType":"after-turn"}\n', "utf8");
+    });
+
+    expect(controller.hasSessionTakeover()).toBe(false);
+    expect(acquireSessionWriteLock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses byte offsets for append-only prompt writes after non-ascii transcript content", async () => {
+    const sessionFile = await createTempSessionFile();
+    await fs.appendFile(
+      sessionFile,
+      '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"修好了，继续验证。"}]}}\n',
+      "utf8",
+    );
+    const acquireSessionWriteLock = vi.fn(async () => ({ release: vi.fn(async () => {}) }));
+    const controller = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock,
+      lockOptions: { ...lockOptions, sessionFile },
+    });
+
+    await controller.releaseForPrompt();
+    await fs.appendFile(
+      sessionFile,
+      '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n',
+      "utf8",
+    );
+
+    await controller.withSessionWriteLock(async () => {
+      await fs.appendFile(sessionFile, '{"type":"custom","customType":"after-turn"}\n', "utf8");
+    });
+
+    expect(controller.hasSessionTakeover()).toBe(false);
+    expect(acquireSessionWriteLock).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects post-prompt writes when another owner advances the session file", async () => {
     const sessionFile = await createTempSessionFile();
     const release = vi.fn(async () => {});
@@ -205,7 +256,11 @@ describe("embedded attempt session lock lifecycle", () => {
     });
 
     await controller.releaseForPrompt();
-    await fs.appendFile(sessionFile, '{"type":"message","id":"takeover"}\n', "utf8");
+    await fs.appendFile(
+      sessionFile,
+      '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"takeover"}]}}\n',
+      "utf8",
+    );
 
     await expect(controller.withSessionWriteLock(() => "late-write")).rejects.toBeInstanceOf(
       EmbeddedAttemptSessionTakeoverError,

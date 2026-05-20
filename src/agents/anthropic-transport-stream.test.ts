@@ -1520,6 +1520,71 @@ describe("anthropic transport stream", () => {
     expect(toolResult.is_error).toBe(false);
   });
 
+  it("omits invalid image base64 before Anthropic payloads", async () => {
+    const model = {
+      ...makeAnthropicTransportModel({ id: "claude-sonnet-4-6" }),
+      input: ["text", "image"],
+    } as AnthropicMessagesModel;
+
+    await runTransportStream(
+      model,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "inspect this" },
+              { type: "image", data: "abcd…efgh", mimeType: "image/jpeg" },
+            ],
+          },
+          {
+            role: "assistant",
+            provider: "anthropic",
+            api: "anthropic-messages",
+            model: "claude-sonnet-4-6",
+            stopReason: "toolUse",
+            timestamp: 0,
+            content: [{ type: "toolCall", id: "tool_1", name: "screenshot", arguments: {} }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "tool_1",
+            content: [{ type: "image", data: "abcd***efgh", mimeType: "image/png" }],
+            isError: false,
+          },
+        ],
+      } as AnthropicStreamContext,
+      {
+        apiKey: "sk-ant-api",
+      } as AnthropicStreamOptions,
+    );
+
+    const requestText = JSON.stringify(latestAnthropicRequest().payload.messages);
+    expect(requestText).not.toContain("…");
+    expect(requestText).not.toContain("***");
+
+    const messages = requireArray(latestAnthropicRequest().payload.messages, "messages").map(
+      (message, index) => requireRecord(message, `message ${index}`),
+    );
+    const firstUserMessage = messages.find((message) => message.role === "user");
+    expect(firstUserMessage?.content).toEqual([
+      { type: "text", text: "inspect this" },
+      { type: "text", text: "[image omitted: invalid base64 payload]" },
+    ]);
+
+    const toolResultMessage = messages.find((message) =>
+      JSON.stringify(message.content).includes("tool_result"),
+    );
+    const toolResult = findRecord(
+      requireArray(toolResultMessage?.content, "tool result message content"),
+      (record) => record.type === "tool_result" && record.tool_use_id === "tool_1",
+    );
+    expect(toolResult.content).toEqual([
+      { type: "text", text: "[image omitted: invalid base64 payload]" },
+    ]);
+    expect(toolResult.is_error).toBe(false);
+  });
+
   it("cancels stalled SSE body reads when the abort signal fires mid-stream", async () => {
     const controller = new AbortController();
     const abortReason = new Error("anthropic test abort");

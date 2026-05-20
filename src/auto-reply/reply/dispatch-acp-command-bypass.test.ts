@@ -85,6 +85,30 @@ describe("shouldBypassAcpDispatchForCommand", () => {
     expect(shouldBypassAcpDispatchForCommand(ctx, {} as OpenClawConfig)).toBe(true);
   });
 
+  it("returns true for local help commands", () => {
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      CommandBody: "/help",
+      BodyForCommands: "/help",
+      BodyForAgent: "/help",
+    });
+
+    expect(shouldBypassAcpDispatchForCommand(ctx, {} as OpenClawConfig)).toBe(true);
+  });
+
+  it("returns true for local focus commands", () => {
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      CommandBody: "/focus agent:codex:acp:session-1",
+      BodyForCommands: "/focus agent:codex:acp:session-1",
+      BodyForAgent: "/focus agent:codex:acp:session-1",
+    });
+
+    expect(shouldBypassAcpDispatchForCommand(ctx, {} as OpenClawConfig)).toBe(true);
+  });
+
   it("returns true for ACP reset-tail slash commands", () => {
     const ctx = buildTestCtx({
       Provider: "discord",

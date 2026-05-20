@@ -9,6 +9,7 @@ import {
   type SimpleStreamOptions,
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
+import { canonicalizeBase64 } from "../media/base64.js";
 import { MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE } from "../shared/assistant-error-format.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import {
@@ -110,6 +111,16 @@ type MutableAssistantOutput = {
 };
 
 const EMPTY_ANTHROPIC_MESSAGES_FALLBACK_TEXT = ".";
+const INVALID_IMAGE_PAYLOAD_PLACEHOLDER = "[image omitted: invalid base64 payload]";
+
+type AnthropicTransportTextBlock = { type: "text"; text: string };
+type AnthropicTransportImageBlock = {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+};
+type AnthropicTransportImageOrTextBlock =
+  | AnthropicTransportTextBlock
+  | AnthropicTransportImageBlock;
 
 function isClaudeOpus47Model(modelId: string): boolean {
   return modelId.includes("opus-4-7") || modelId.includes("opus-4.7");
@@ -255,14 +266,9 @@ function convertContentBlocks(
       content.map((item) => ("text" in item ? item.text : "")).join("\n"),
     );
   }
-  const blocks: Array<
-    | { type: "text"; text: string }
-    | {
-        type: "image";
-        source: { type: "base64"; media_type: string; data: string };
-      }
-  > = [];
+  const blocks: Array<AnthropicTransportImageOrTextBlock> = [];
   let hasTextBlock = false;
+  let hasImageBlock = false;
   for (const block of content) {
     if (block.type === "text") {
       const text = sanitizeTransportPayloadText(block.text);
@@ -271,20 +277,41 @@ function convertContentBlocks(
         hasTextBlock = true;
       }
     } else {
-      blocks.push({
-        type: "image" as const,
-        source: {
-          type: "base64",
-          media_type: block.mimeType,
-          data: block.data,
-        },
-      });
+      const convertedBlock = convertImageContentBlock(block);
+      blocks.push(convertedBlock);
+      if (convertedBlock.type === "text") {
+        hasTextBlock = true;
+      } else {
+        hasImageBlock = true;
+      }
     }
   }
-  if (!hasTextBlock) {
+  if (!hasTextBlock && hasImageBlock) {
     return [{ type: "text", text: "(see attached image)" }, ...blocks];
   }
   return blocks;
+}
+
+function convertImageContentBlock(block: {
+  type: "image";
+  data: string;
+  mimeType: string;
+}): AnthropicTransportImageOrTextBlock {
+  const canonicalData = canonicalizeBase64(block.data);
+  if (!canonicalData) {
+    return {
+      type: "text",
+      text: INVALID_IMAGE_PAYLOAD_PLACEHOLDER,
+    };
+  }
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: block.mimeType,
+      data: canonicalData,
+    },
+  };
 }
 
 function normalizeToolCallId(id: string): string {
@@ -312,26 +339,13 @@ function convertAnthropicMessages(
         }
         continue;
       }
-      const blocks: Array<
-        | { type: "text"; text: string }
-        | {
-            type: "image";
-            source: { type: "base64"; media_type: string; data: string };
-          }
-      > = msg.content.map((item) =>
+      const blocks: Array<AnthropicTransportImageOrTextBlock> = msg.content.map((item) =>
         item.type === "text"
           ? {
               type: "text",
               text: sanitizeTransportPayloadText(item.text),
             }
-          : {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: item.mimeType,
-                data: item.data,
-              },
-            },
+          : convertImageContentBlock(item),
       );
       let filteredBlocks = model.input.includes("image")
         ? blocks

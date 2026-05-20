@@ -88,6 +88,12 @@ importers:
       '@openclaw/proxyline':
         specifier: 0.3.3
         version: 0.3.3(undici@8.3.0)
+      '@zed-industries/codex-acp':
+        specifier: ^0.14.0
+        version: 0.14.0
+      '@zed-industries/codex-acp-darwin-arm64':
+        specifier: ^0.14.0
+        version: 0.14.0
       ajv:
         specifier: 8.20.0
         version: 8.20.0
@@ -10382,8 +10388,7 @@ snapshots:
     dependencies:
       '@wasm-audio-decoders/common': 9.0.7
 
-  '@zed-industries/codex-acp-darwin-arm64@0.14.0':
-    optional: true
+  '@zed-industries/codex-acp-darwin-arm64@0.14.0': {}
 
   '@zed-industries/codex-acp-darwin-x64@0.14.0':
     optional: true

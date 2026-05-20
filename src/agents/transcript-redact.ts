@@ -49,6 +49,10 @@ function isPlainTranscriptObject(value: object): value is Record<string, unknown
   return prototype === Object.prototype || prototype === null;
 }
 
+function isImageContentBlock(value: Record<string, unknown>): boolean {
+  return value.type === "image" && typeof value.data === "string";
+}
+
 function redactTranscriptStructuredValue(
   value: unknown,
   cfg?: OpenClawConfig,
@@ -87,8 +91,12 @@ function redactTranscriptStructuredValue(
 
   seen.add(value);
   const source = value;
+  const preserveImageData = isImageContentBlock(source);
   let next: Record<string, unknown> | null = null;
   for (const [key, item] of Object.entries(source)) {
+    if (preserveImageData && key === "data") {
+      continue;
+    }
     const redacted = redactTranscriptStructuredValue(item, cfg, key, seen);
     if (redacted === item) {
       continue;

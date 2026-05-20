@@ -6,6 +6,7 @@ import {
   createNativeCommandsHarness,
   createTelegramGroupCommandContext,
   findNotAuthorizedCalls,
+  getNativeCommandDispatchMock,
 } from "./bot-native-commands.test-helpers.js";
 
 describe("native command auth in groups", () => {
@@ -18,6 +19,7 @@ describe("native command auth in groups", () => {
     useAccessGroups?: boolean;
     groupConfig?: Record<string, unknown>;
     resolveGroupPolicy?: () => ChannelGroupPolicy;
+    accountId?: string;
   }) {
     return createNativeCommandsHarness({
       cfg: params.cfg ?? ({} as OpenClawConfig),
@@ -34,6 +36,7 @@ describe("native command auth in groups", () => {
             allowed: true,
           }) as ChannelGroupPolicy),
       groupConfig: params.groupConfig,
+      accountId: params.accountId,
     });
   }
 
@@ -204,5 +207,64 @@ describe("native command auth in groups", () => {
       "You are not authorized to use this command.",
       { message_thread_id: 42 },
     );
+  });
+
+  it("ignores untargeted group /acp native commands", async () => {
+    const dispatchReply = getNativeCommandDispatchMock();
+    dispatchReply.mockClear();
+    const { handlers, sendMessage } = setup({
+      accountId: "mc-bot",
+      groupAllowFrom: ["12345"],
+      useAccessGroups: true,
+    });
+
+    const ctx = createTelegramGroupCommandContext({
+      text: "/acp spawn codex --bind here",
+      botUsername: "mc_bot",
+    });
+
+    await handlers.acp?.(ctx);
+
+    expect(dispatchReply).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("handles group /acp native commands targeted at this bot", async () => {
+    const dispatchReply = getNativeCommandDispatchMock();
+    dispatchReply.mockClear();
+    const { handlers } = setup({
+      accountId: "mc-bot",
+      groupAllowFrom: ["12345"],
+      useAccessGroups: true,
+    });
+
+    const ctx = createTelegramGroupCommandContext({
+      text: "/acp@mc_bot spawn codex --bind here",
+      botUsername: "mc_bot",
+    });
+
+    await handlers.acp?.(ctx);
+
+    expect(dispatchReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores group /acp native commands targeted at another bot", async () => {
+    const dispatchReply = getNativeCommandDispatchMock();
+    dispatchReply.mockClear();
+    const { handlers, sendMessage } = setup({
+      accountId: "mc-bot",
+      groupAllowFrom: ["12345"],
+      useAccessGroups: true,
+    });
+
+    const ctx = createTelegramGroupCommandContext({
+      text: "/acp@engineer_bot spawn codex --bind here",
+      botUsername: "mc_bot",
+    });
+
+    await handlers.acp?.(ctx);
+
+    expect(dispatchReply).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 });

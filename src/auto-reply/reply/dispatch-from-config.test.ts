@@ -2760,7 +2760,7 @@ describe("dispatchReplyFromConfig", () => {
 
   it("posts a one-time resolved-session-id notice in thread after the first ACP turn", async () => {
     setNoAbort();
-    const runtime = createAcpRuntime([{ type: "text_delta", text: "hello" }, { type: "done" }]);
+    const runtime = createAcpRuntime([{ type: "done" }]);
     const pendingAcp = {
       backend: "acpx",
       agent: "codex",
@@ -2818,8 +2818,8 @@ describe("dispatchReplyFromConfig", () => {
     await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver: vi.fn() });
 
     const finalCalls = (dispatcher.sendFinalReply as ReturnType<typeof vi.fn>).mock.calls;
-    expect(finalCalls.length).toBe(2);
-    const noticePayload = finalCalls[1]?.[0] as ReplyPayload | undefined;
+    expect(finalCalls.length).toBe(1);
+    const noticePayload = finalCalls[0]?.[0] as ReplyPayload | undefined;
     expect(noticePayload?.text).toContain("Session ids resolved");
     expect(noticePayload?.text).toContain("agent session id: inner-123");
     expect(noticePayload?.text).toContain("acpx session id: acpx-123");
@@ -2828,7 +2828,7 @@ describe("dispatchReplyFromConfig", () => {
 
   it("posts resolved-session-id notice when ACP session is bound even without MessageThreadId", async () => {
     setNoAbort();
-    const runtime = createAcpRuntime([{ type: "text_delta", text: "hello" }, { type: "done" }]);
+    const runtime = createAcpRuntime([{ type: "done" }]);
     const pendingAcp = {
       backend: "acpx",
       agent: "codex",
@@ -2901,8 +2901,8 @@ describe("dispatchReplyFromConfig", () => {
     await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver: vi.fn() });
 
     const finalCalls = (dispatcher.sendFinalReply as ReturnType<typeof vi.fn>).mock.calls;
-    expect(finalCalls.length).toBe(2);
-    const noticePayload = finalCalls[1]?.[0] as ReplyPayload | undefined;
+    expect(finalCalls.length).toBe(1);
+    const noticePayload = finalCalls[0]?.[0] as ReplyPayload | undefined;
     expect(noticePayload?.text).toContain("Session ids resolved");
     expect(noticePayload?.text).toContain("agent session id: inner-123");
     expect(noticePayload?.text).toContain("acpx session id: acpx-123");
@@ -3061,6 +3061,183 @@ describe("dispatchReplyFromConfig", () => {
       "block reply",
     ) as ReplyPayload | undefined;
     expect(blockPayload?.text).toBe("Bound ACP reply");
+  });
+
+  it("keeps bound Telegram DM ACP replies visible when automatic replies normally require message tool delivery", async () => {
+    setNoAbort();
+    const boundSessionKey = "agent:claude:acp:telegram-dm-bound";
+    const runtime = createAcpRuntime([
+      { type: "text_delta", text: "Telegram DM ACP reply" },
+      { type: "done" },
+    ]);
+    acpMocks.readAcpSessionEntry.mockImplementation(
+      (params: { sessionKey: string; cfg?: OpenClawConfig }) =>
+        params.sessionKey === boundSessionKey
+          ? {
+              sessionKey: boundSessionKey,
+              storeSessionKey: boundSessionKey,
+              cfg: {},
+              storePath: "/tmp/mock-sessions.json",
+              entry: {},
+              acp: {
+                backend: "acpx",
+                agent: "claude",
+                runtimeSessionName: "runtime:claude",
+                mode: "persistent",
+                state: "idle",
+                lastActivityAt: Date.now(),
+              },
+            }
+          : null,
+    );
+    acpMocks.requireAcpRuntimeBackend.mockReturnValue({
+      id: "acpx",
+      runtime,
+    });
+    const boundConversationBinding = {
+      bindingId: "telegram-dm-acp-current",
+      targetSessionKey: boundSessionKey,
+      targetKind: "session",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8524721791",
+      },
+      status: "active",
+      boundAt: Date.now(),
+    } satisfies SessionBindingRecord;
+    sessionBindingMocks.resolveByConversation.mockReturnValue(boundConversationBinding);
+    sessionBindingMocks.listBySession.mockImplementation((targetSessionKey: string) =>
+      targetSessionKey === boundSessionKey ? [boundConversationBinding] : [],
+    );
+
+    const cfg = {
+      acp: {
+        enabled: true,
+        dispatch: { enabled: true },
+        stream: { deliveryMode: "live", coalesceIdleMs: 0, maxChunkChars: 256 },
+      },
+      messages: {
+        visibleReplies: "message_tool",
+      },
+    } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const replyResolver = vi.fn(async () => ({ text: "fallback reply" }) satisfies ReplyPayload);
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      OriginatingChannel: "telegram",
+      OriginatingTo: "telegram:8524721791",
+      To: "telegram:8524721791",
+      AccountId: "default",
+      ChatType: "direct",
+      SessionKey: "agent:main:telegram:direct:8524721791",
+      CommandBody: "你好",
+      RawBody: "你好",
+      BodyForAgent: "你好",
+      Body: "你好",
+    });
+
+    const result = await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(replyResolver).not.toHaveBeenCalled();
+    const blockPayload = firstMockArg(
+      dispatcher.sendBlockReply as ReturnType<typeof vi.fn>,
+      "block reply",
+    ) as ReplyPayload | undefined;
+    expect(blockPayload?.text).toBe("Telegram DM ACP reply");
+  });
+
+  it("keeps bound Telegram topic ACP replies visible when group replies normally require message tool delivery", async () => {
+    setNoAbort();
+    const boundSessionKey = "agent:codex:acp:telegram-topic-bound";
+    const runtime = createAcpRuntime([
+      { type: "text_delta", text: "Telegram topic ACP reply" },
+      { type: "done" },
+    ]);
+    acpMocks.readAcpSessionEntry.mockImplementation(
+      (params: { sessionKey: string; cfg?: OpenClawConfig }) =>
+        params.sessionKey === boundSessionKey
+          ? {
+              sessionKey: boundSessionKey,
+              storeSessionKey: boundSessionKey,
+              cfg: {},
+              storePath: "/tmp/mock-sessions.json",
+              entry: {},
+              acp: {
+                backend: "acpx",
+                agent: "codex",
+                runtimeSessionName: "runtime:codex",
+                mode: "persistent",
+                state: "idle",
+                lastActivityAt: Date.now(),
+              },
+            }
+          : null,
+    );
+    acpMocks.requireAcpRuntimeBackend.mockReturnValue({
+      id: "acpx",
+      runtime,
+    });
+    const boundConversationBinding = {
+      bindingId: "telegram-topic-acp-current",
+      targetSessionKey: boundSessionKey,
+      targetKind: "session",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "498",
+        parentConversationId: "-1003841603622",
+      },
+      status: "active",
+      boundAt: Date.now(),
+    } satisfies SessionBindingRecord;
+    sessionBindingMocks.resolveByConversation.mockReturnValue(boundConversationBinding);
+    sessionBindingMocks.listBySession.mockImplementation((targetSessionKey: string) =>
+      targetSessionKey === boundSessionKey ? [boundConversationBinding] : [],
+    );
+
+    const cfg = {
+      acp: {
+        enabled: true,
+        dispatch: { enabled: true },
+        stream: { deliveryMode: "live", coalesceIdleMs: 0, maxChunkChars: 256 },
+      },
+      messages: {
+        groupChat: {
+          visibleReplies: "message_tool",
+        },
+      },
+    } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const replyResolver = vi.fn(async () => ({ text: "fallback reply" }) satisfies ReplyPayload);
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      OriginatingChannel: "telegram",
+      OriginatingTo: "telegram:-1003841603622",
+      To: "telegram:-1003841603622",
+      AccountId: "default",
+      ChatType: "group",
+      IsForum: true,
+      MessageThreadId: "498",
+      SessionKey: "agent:main:telegram:group:-1003841603622:topic:498",
+      CommandBody: "看一下这个问题",
+      RawBody: "看一下这个问题",
+      BodyForAgent: "看一下这个问题",
+      Body: "看一下这个问题",
+    });
+
+    const result = await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(replyResolver).not.toHaveBeenCalled();
+    const blockPayload = firstMockArg(
+      dispatcher.sendBlockReply as ReturnType<typeof vi.fn>,
+      "block reply",
+    ) as ReplyPayload | undefined;
+    expect(blockPayload?.text).toBe("Telegram topic ACP reply");
   });
 
   it("coalesces tiny ACP token deltas into normal Discord text spacing", async () => {

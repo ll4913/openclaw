@@ -2758,6 +2758,35 @@ describe("createTelegramBot", () => {
     });
   }
 
+  it("treats mention-prefixed slash commands as commands for the addressed bot", async () => {
+    resetHarnessSpies();
+    loadConfig.mockReturnValue({
+      commands: { useAccessGroups: false },
+      channels: {
+        telegram: {
+          groupPolicy: "open",
+          groups: { "*": { requireMention: true } },
+        },
+      },
+    });
+
+    await dispatchMessage({
+      message: {
+        chat: { id: 7, type: "group", title: "Test Group" },
+        text: "@openclaw_bot /acp status",
+        entities: [{ type: "mention", offset: 0, length: 13 }],
+        date: 1736380800,
+        message_id: 2,
+        from: { id: 9, first_name: "Ada" },
+      },
+    });
+
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    const payload = requireValue(replySpy.mock.calls.at(0), "replySpy call")[0];
+    expect(payload.CommandBody).toBe("/acp status");
+    expect(payload.WasMentioned).toBe(true);
+  });
+
   it("accepts mentionPatterns matches with and without unrelated mentions", async () => {
     const cases = [
       {

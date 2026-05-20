@@ -156,6 +156,7 @@ type AcpDispatchDeliveryState = {
   settledDirectVisibleText: boolean;
   routedCounts: Record<ReplyDispatchKind, number>;
   toolMessageByCallId: Map<string, ToolMessageHandle>;
+  deliveredAnyPayload: boolean;
 };
 
 export type AcpDispatchDeliveryCoordinator = {
@@ -173,6 +174,7 @@ export type AcpDispatchDeliveryCoordinator = {
   settleVisibleText: () => Promise<void>;
   hasDeliveredFinalReply: () => boolean;
   hasDeliveredVisibleText: () => boolean;
+  hasDeliveredAnyPayload: () => boolean;
   hasFailedVisibleTextDelivery: () => boolean;
   getRoutedCounts: () => Record<ReplyDispatchKind, number>;
   applyRoutedCounts: (counts: Record<ReplyDispatchKind, number>) => void;
@@ -233,6 +235,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
       final: 0,
     },
     toolMessageByCallId: new Map(),
+    deliveredAnyPayload: false,
   };
   const settleDirectVisibleText = async () => {
     if (state.settledDirectVisibleText || state.queuedDirectVisibleTextDeliveries === 0) {
@@ -300,6 +303,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
         requesterAccountId: params.ctx.AccountId,
       });
       state.routedCounts.tool += 1;
+      state.deliveredAnyPayload = true;
       return true;
     } catch (error) {
       logVerbose(
@@ -433,6 +437,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
       if (kind === "final") {
         state.deliveredFinalReply = true;
       }
+      state.deliveredAnyPayload = true;
       if (tracksVisibleText) {
         state.deliveredVisibleText = true;
       }
@@ -454,6 +459,9 @@ export function createAcpDispatchDeliveryCoordinator(params: {
           : params.dispatcher.sendFinalReply(ttsPayload);
     if (kind === "final" && delivered) {
       state.deliveredFinalReply = true;
+    }
+    if (delivered) {
+      state.deliveredAnyPayload = true;
     }
     if (delivered && tracksVisibleText) {
       state.queuedDirectVisibleTextDeliveries += 1;
@@ -478,6 +486,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
     settleVisibleText: settleDirectVisibleText,
     hasDeliveredFinalReply: () => state.deliveredFinalReply,
     hasDeliveredVisibleText: () => state.deliveredVisibleText,
+    hasDeliveredAnyPayload: () => state.deliveredAnyPayload,
     hasFailedVisibleTextDelivery: () => state.failedVisibleTextDelivery,
     getRoutedCounts: () => ({ ...state.routedCounts }),
     applyRoutedCounts: (counts) => {

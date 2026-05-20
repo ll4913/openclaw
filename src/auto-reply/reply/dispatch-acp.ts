@@ -29,6 +29,7 @@ import type { SourceReplyDeliveryMode } from "../get-reply-options.types.js";
 import { markReplyPayloadAsTtsSupplement } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { createAcpReplyProjector } from "./acp-projector.js";
+import { resolveAcpProjectionSettings } from "./acp-stream-settings.js";
 import {
   loadAgentTurnMediaRuntime,
   resolveAgentTurnAttachments,
@@ -218,6 +219,9 @@ async function finalizeAcpTurnOutput(params: {
   await params.delivery.settleVisibleText();
   let queuedFinal =
     params.delivery.hasDeliveredVisibleText() && !params.delivery.hasFailedVisibleTextDelivery();
+  const shouldFinalizeLiveTelegramBlockText =
+    normalizeOptionalLowercaseString(params.ttsChannel) === "telegram" &&
+    resolveAcpProjectionSettings(params.cfg).deliveryMode === "live";
   const ttsMode = resolveConfiguredTtsMode(params.cfg, {
     agentId: params.agentId,
     channelId: params.ttsChannel,
@@ -279,7 +283,9 @@ async function finalizeAcpTurnOutput(params: {
     accumulatedVisibleBlockText.trim().length > 0 &&
     !finalMediaDelivered &&
     !params.delivery.hasDeliveredFinalReply() &&
-    (!params.delivery.hasDeliveredVisibleText() || params.delivery.hasFailedVisibleTextDelivery());
+    (shouldFinalizeLiveTelegramBlockText ||
+      !params.delivery.hasDeliveredVisibleText() ||
+      params.delivery.hasFailedVisibleTextDelivery());
   if (shouldDeliverTextFallback) {
     const delivered = await params.delivery.deliver(
       "final",
@@ -289,7 +295,10 @@ async function finalizeAcpTurnOutput(params: {
     queuedFinal = queuedFinal || delivered;
   }
 
-  if (params.shouldEmitResolvedIdentityNotice) {
+  const hasAssistantOutput =
+    accumulatedVisibleBlockText.trim().length > 0 ||
+    params.delivery.getAccumulatedFinalText().trim().length > 0;
+  if (params.shouldEmitResolvedIdentityNotice && !hasAssistantOutput) {
     const { readAcpSessionEntry } = await loadDispatchAcpSessionRuntime();
     const currentMeta = readAcpSessionEntry({
       cfg: params.cfg,
@@ -564,10 +573,23 @@ export async function tryDispatchAcpReply(params: {
         delivery,
         inboundAudio: params.inboundAudio,
         sessionTtsAuto: params.sessionTtsAuto,
-        ttsChannel: params.ttsChannel,
+        ttsChannel: params.ttsChannel ?? params.ctx.Surface ?? params.ctx.Provider,
         ttsAccountId: effectiveDispatchAccountId,
         shouldEmitResolvedIdentityNotice,
       })) || queuedFinal;
+    if (!queuedFinal && !delivery.hasDeliveredAnyPayload()) {
+      const delivered = await delivery.deliver(
+        "final",
+        {
+          text: prefixSystemMessage(
+            "ACP completed without visible output. Run /acp status if this keeps happening.",
+          ),
+          isFallbackNotice: true,
+        },
+        { skipTts: true },
+      );
+      queuedFinal = queuedFinal || delivered;
+    }
 
     const counts = params.dispatcher.getQueuedCounts();
     delivery.applyRoutedCounts(counts);

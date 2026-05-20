@@ -86,6 +86,7 @@ import {
   resolveTelegramCustomCommands,
   TELEGRAM_COMMAND_NAME_PATTERN,
 } from "./command-config.js";
+import { resolveTelegramSlashCommandTargetUsername } from "./command-targeting.js";
 import {
   resolveTelegramConversationBaseSessionKey,
   resolveTelegramConversationRoute,
@@ -166,6 +167,53 @@ function resolveTelegramProgressPlaceholder(command: {
     command.nativeProgressMessages?.telegram?.trim() ??
     command.nativeProgressMessages?.default?.trim();
   return text ? text : null;
+}
+
+function isTelegramGroupCommandMessage(
+  msg: NonNullable<TelegramNativeCommandContext["message"]>,
+): boolean {
+  const type = msg.chat.type;
+  return type === "group" || type === "supergroup";
+}
+
+function resolveTelegramCommandTargetUsername(params: {
+  msg: NonNullable<TelegramNativeCommandContext["message"]>;
+  commandName: string;
+}): string | null | undefined {
+  return resolveTelegramSlashCommandTargetUsername({
+    text: typeof params.msg.text === "string" ? params.msg.text : undefined,
+    commandName: params.commandName,
+  });
+}
+
+function resolveTelegramBotUsername(ctx: TelegramNativeCommandContext): string {
+  return normalizeLowercaseStringOrEmpty(
+    (ctx as { me?: { username?: unknown } }).me?.username as string | undefined,
+  );
+}
+
+function shouldSkipTelegramGroupAcpCommandForAccount(params: {
+  ctx: TelegramNativeCommandContext;
+  msg: NonNullable<TelegramNativeCommandContext["message"]>;
+  commandName: string;
+}): boolean {
+  if (normalizeTelegramCommandName(params.commandName) !== "acp") {
+    return false;
+  }
+  if (!isTelegramGroupCommandMessage(params.msg)) {
+    return false;
+  }
+  const targetUsername = resolveTelegramCommandTargetUsername({
+    msg: params.msg,
+    commandName: params.commandName,
+  });
+  if (targetUsername === undefined) {
+    return false;
+  }
+  if (targetUsername) {
+    return resolveTelegramBotUsername(params.ctx) !== targetUsername;
+  }
+  return true;
 }
 
 async function resolveTelegramCommandSessionFile(params: {
@@ -953,6 +1001,18 @@ export const registerTelegramNativeCommands = ({
           return;
         }
         if (shouldSkipUpdate(ctx)) {
+          return;
+        }
+        if (
+          shouldSkipTelegramGroupAcpCommandForAccount({
+            ctx,
+            msg,
+            commandName: command.name,
+          })
+        ) {
+          logVerbose(
+            `telegram native command: ignoring untargeted or mismatched group /acp for account ${accountId}; use /acp@botusername to target one bot`,
+          );
           return;
         }
         const runtimeCfg = loadFreshRuntimeConfig();

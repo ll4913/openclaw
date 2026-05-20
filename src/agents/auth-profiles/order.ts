@@ -306,6 +306,16 @@ export function resolveAuthProfileOrder(params: {
   if (filtered.length === 0 && explicitProfiles.length > 0 && allBaseProfilesMissing) {
     filtered = storeProfiles.filter(isValidProfile);
   }
+  if (
+    filtered.length === 0 &&
+    explicitOrder &&
+    explicitOrder.length > 0 &&
+    providerAuthKey === OPENAI_CODEX_PROVIDER_ID
+  ) {
+    filtered = storeProfiles
+      .filter((profileId) => !baseOrder.includes(profileId))
+      .filter(isValidProfile);
+  }
 
   const deduped = dedupeProfileIds(filtered);
 
