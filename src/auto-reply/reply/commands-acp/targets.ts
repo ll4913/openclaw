@@ -1,4 +1,7 @@
 import { callGateway } from "../../../gateway/call.js";
+import { normalizeConversationRef } from "../../../infra/outbound/session-binding-normalization.js";
+import { getSessionBindingService } from "../../../infra/outbound/session-binding-service.js";
+import { isAcpSessionKey } from "../../../routing/session-key.js";
 import { normalizeOptionalString } from "../../../shared/string-coerce.js";
 import { resolveEffectiveResetTargetSessionKey } from "../acp-reset-target.js";
 import { resolveRequesterSessionKey } from "../commands-subagents/shared.js";
@@ -35,6 +38,43 @@ async function resolveSessionKeyByToken(token: string): Promise<string | null> {
   return null;
 }
 
+function resolveCurrentBoundAcpSessionKeyMatchingToken(params: {
+  commandParams: HandleCommandsParams;
+  token: string;
+}): string | undefined {
+  const token = normalizeOptionalString(params.token) ?? "";
+  if (!token) {
+    return undefined;
+  }
+
+  const bindingContext = resolveAcpCommandBindingContext(params.commandParams);
+  if (!bindingContext.channel || !bindingContext.conversationId) {
+    return undefined;
+  }
+
+  const binding = getSessionBindingService().resolveByConversation(
+    normalizeConversationRef({
+      channel: bindingContext.channel,
+      accountId: bindingContext.accountId,
+      conversationId: bindingContext.conversationId,
+      parentConversationId: bindingContext.parentConversationId,
+    }),
+  );
+  const targetSessionKey = normalizeOptionalString(binding?.targetSessionKey) ?? "";
+  if (!isAcpSessionKey(targetSessionKey)) {
+    return undefined;
+  }
+  if (token === targetSessionKey) {
+    return targetSessionKey;
+  }
+
+  const bindingLabel = normalizeOptionalString(binding?.metadata?.label) ?? "";
+  if (bindingLabel && token === bindingLabel) {
+    return targetSessionKey;
+  }
+  return undefined;
+}
+
 export function resolveBoundAcpThreadSessionKey(params: HandleCommandsParams): string | undefined {
   const commandTargetSessionKey = normalizeOptionalString(params.ctx.CommandTargetSessionKey) ?? "";
   const activeSessionKey =
@@ -58,6 +98,17 @@ export async function resolveAcpTargetSessionKey(params: {
 }): Promise<{ ok: true; sessionKey: string } | { ok: false; error: string }> {
   const token = normalizeOptionalString(params.token) ?? "";
   if (token) {
+    const currentBoundSessionKey = resolveCurrentBoundAcpSessionKeyMatchingToken({
+      commandParams: params.commandParams,
+      token,
+    });
+    if (currentBoundSessionKey) {
+      return {
+        ok: true,
+        sessionKey: currentBoundSessionKey,
+      };
+    }
+
     const resolved = await resolveSessionKeyByToken(token);
     if (resolved) {
       return { ok: true, sessionKey: resolved };

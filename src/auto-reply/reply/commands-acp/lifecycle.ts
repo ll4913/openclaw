@@ -15,6 +15,7 @@ import {
   resolveAcpSessionCwd,
   resolveAcpThreadSessionDetailLines,
 } from "../../../acp/runtime/session-identifiers.js";
+import { resolveSessionStorePathForAcp } from "../../../acp/runtime/session-meta.js";
 import { resolveAcpSpawnRuntimePolicyError } from "../../../agents/acp-spawn.js";
 import { getChannelPlugin, normalizeChannelId } from "../../../channels/plugins/index.js";
 import {
@@ -466,20 +467,38 @@ async function persistSpawnedSessionLabel(params: {
       };
     }
   }
-  if (!params.commandParams.storePath) {
-    return;
+
+  const storePaths = new Set<string>();
+  if (params.commandParams.storePath) {
+    storePaths.add(params.commandParams.storePath);
   }
-  await updateSessionStore(params.commandParams.storePath, (store) => {
-    const existing = store[params.sessionKey];
-    if (!existing) {
-      return;
-    }
-    store[params.sessionKey] = {
-      ...existing,
-      label,
-      updatedAt: now,
-    };
-  });
+  storePaths.add(
+    resolveSessionStorePathForAcp({
+      cfg: params.commandParams.cfg,
+      sessionKey: params.sessionKey,
+    }).storePath,
+  );
+
+  for (const storePath of storePaths) {
+    await updateSessionStore(
+      storePath,
+      (store) => {
+        const existing = store[params.sessionKey];
+        if (!existing) {
+          return;
+        }
+        store[params.sessionKey] = {
+          ...existing,
+          label,
+          updatedAt: now,
+        };
+      },
+      {
+        activeSessionKey: params.sessionKey,
+        skipMaintenance: true,
+      },
+    );
+  }
 }
 
 export async function handleAcpSpawnAction(

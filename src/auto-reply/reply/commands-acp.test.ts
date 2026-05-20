@@ -18,6 +18,7 @@ const hoisted = vi.hoisted(() => {
   const upsertAcpSessionMetaMock = vi.fn();
   const resolveSessionStorePathForAcpMock = vi.fn();
   const loadSessionStoreMock = vi.fn();
+  const updateSessionStoreMock = vi.fn();
   const sessionBindingCapabilitiesMock = vi.fn();
   const sessionBindingBindMock = vi.fn();
   const sessionBindingListBySessionMock = vi.fn();
@@ -41,6 +42,7 @@ const hoisted = vi.hoisted(() => {
     upsertAcpSessionMetaMock,
     resolveSessionStorePathForAcpMock,
     loadSessionStoreMock,
+    updateSessionStoreMock,
     sessionBindingCapabilitiesMock,
     sessionBindingBindMock,
     sessionBindingListBySessionMock,
@@ -104,6 +106,7 @@ vi.mock("../../config/sessions.js", async () => {
   return {
     ...actual,
     loadSessionStore: (...args: unknown[]) => hoisted.loadSessionStoreMock(...args),
+    updateSessionStore: (...args: unknown[]) => hoisted.updateSessionStoreMock(...args),
   };
 });
 
@@ -902,6 +905,7 @@ describe("/acp command", () => {
       storePath: "/tmp/sessions-acp.json",
     });
     hoisted.loadSessionStoreMock.mockReset().mockReturnValue({});
+    hoisted.updateSessionStoreMock.mockReset().mockResolvedValue(null);
     hoisted.sessionBindingCapabilitiesMock
       .mockReset()
       .mockReturnValue(createSessionBindingCapabilities());
@@ -1169,6 +1173,56 @@ describe("/acp command", () => {
 
     expect(result?.reply?.text).toContain("Bound this conversation to");
     expectGatewayMethodNotCalled("sessions.patch");
+    expect(hoisted.updateSessionStoreMock).toHaveBeenCalledWith(
+      "/tmp/sessions-acp.json",
+      expect.any(Function),
+      expect.any(Object),
+    );
+    const sessionKey = result?.reply?.text?.match(/agent:codex:acp:[\w-]+/)?.[0];
+    expect(sessionKey).toBeTruthy();
+    const update = hoisted.updateSessionStoreMock.mock.calls[0]?.[1] as
+      | ((store: Record<string, { label?: string; sessionId: string; updatedAt: number }>) => void)
+      | undefined;
+    const store = {
+      [sessionKey ?? ""]: {
+        sessionId: "session-1",
+        updatedAt: 1,
+      },
+    };
+    update?.(store);
+    expect(store[sessionKey ?? ""]?.label).toBe("inbox");
+  });
+
+  it("prefers the current bound ACP session when a command token matches its label", async () => {
+    const sessionKey = "agent:codex:acp:current-bound";
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(
+      createSessionBinding({
+        targetSessionKey: sessionKey,
+        conversation: {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:parent-1",
+        },
+        metadata: {
+          agentId: "codex",
+          boundBy: "user-1",
+          label: "mc-codex",
+        },
+      }),
+    );
+    hoisted.readAcpSessionEntryMock.mockReturnValue(createAcpSessionEntry({ sessionKey }));
+
+    const result = await runDiscordAcpCommand("/acp model gpt-5.5 mc-codex");
+
+    expect(result?.reply?.text).toContain(`Updated ACP model for ${sessionKey}`);
+    expect(hoisted.callGatewayMock).not.toHaveBeenCalled();
+    expect(hoisted.setConfigOptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey,
+        key: "model",
+        value: "gpt-5.5",
+      }),
+    );
   });
 
   it("accepts unicode dash option prefixes in /acp spawn args", async () => {
