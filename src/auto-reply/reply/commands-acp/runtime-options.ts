@@ -20,7 +20,6 @@ import {
   ACP_SET_MODE_USAGE,
   ACP_STATUS_USAGE,
   ACP_TIMEOUT_USAGE,
-  formatAcpCapabilitiesText,
   formatRuntimeOptionsText,
   parseOptionalSingleTarget,
   parseSetCommandInput,
@@ -103,6 +102,105 @@ async function withSingleTargetValue<T>(params: {
   return await params.run(resolved);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatShortSessionKey(sessionKey: string): string {
+  const id = sessionKey.split(":").pop() ?? sessionKey;
+  if (id.length <= 16) {
+    return id;
+  }
+  return `${id.slice(0, 8)}...${id.slice(-4)}`;
+}
+
+function formatTimestamp(ms: number): string {
+  return new Date(ms)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "Z")
+    .replace("T", " ");
+}
+
+function getStringField(value: unknown, key: string): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const field = value[key];
+  return typeof field === "string" && field.trim() ? field.trim() : undefined;
+}
+
+function getConfigOptionValue(details: unknown, id: string): string | undefined {
+  if (!isRecord(details) || !Array.isArray(details.configOptions)) {
+    return undefined;
+  }
+  for (const option of details.configOptions) {
+    if (!isRecord(option) || option.id !== id) {
+      continue;
+    }
+    const currentValue = option.currentValue;
+    if (typeof currentValue === "string" && currentValue.trim()) {
+      return currentValue.trim();
+    }
+  }
+  return undefined;
+}
+
+function getRuntimePid(params: { details: unknown; summary: unknown }): string | undefined {
+  if (isRecord(params.details)) {
+    const pid = params.details.pid;
+    if (typeof pid === "number" || typeof pid === "string") {
+      const text = String(pid).trim();
+      if (text) {
+        return text;
+      }
+    }
+  }
+  if (typeof params.summary === "string") {
+    const match = params.summary.match(/\bpid=(\d+)\b/);
+    return match?.[1];
+  }
+  return undefined;
+}
+
+function getRuntimeOpenState(params: { details: unknown; summary: unknown }): string | undefined {
+  if (isRecord(params.details) && typeof params.details.closed === "boolean") {
+    return params.details.closed ? "closed" : "open";
+  }
+  if (typeof params.summary === "string") {
+    if (/\bclosed\b/i.test(params.summary)) {
+      return "closed";
+    }
+    if (/\bopen\b/i.test(params.summary) || /\balive\b/i.test(params.summary)) {
+      return "open";
+    }
+  }
+  if (isRecord(params.details) && params.details.status === "alive") {
+    return "open";
+  }
+  return undefined;
+}
+
+function formatRuntimeLine(params: { details: unknown; summary: unknown }): string | undefined {
+  const openState = getRuntimeOpenState(params);
+  const pid = getRuntimePid(params);
+  if (!openState && !pid) {
+    return undefined;
+  }
+  return `Runtime: ${openState ?? "unknown"}${pid ? ` (pid ${pid})` : ""}`;
+}
+
+function formatStateLine(state: unknown, runtimeDetails: unknown, runtimeSummary: unknown): string {
+  const stateText = typeof state === "string" && state.trim() ? state.trim() : "unknown";
+  const openState = getRuntimeOpenState({ details: runtimeDetails, summary: runtimeSummary });
+  if (openState === "closed") {
+    return "Status: closed";
+  }
+  if (stateText === "idle") {
+    return "Status: idle (ready)";
+  }
+  return `Status: ${stateText}`;
+}
+
 export async function handleAcpStatusAction(
   params: HandleCommandsParams,
   restTokens: string[],
@@ -139,40 +237,49 @@ export async function handleAcpStatusAction(
       });
       const taskError = sanitizeTaskStatusText(linkedTask?.error, { errorContext: true });
       const lastError = sanitizeTaskStatusText(status.lastError, { errorContext: true });
-      const runtimeSummary = sanitizeTaskStatusText(status.runtimeStatus?.summary, {
-        errorContext: true,
-      });
-      const runtimeDetails = sanitizeTaskStatusText(status.runtimeStatus?.details, {
-        errorContext: true,
+      const runtimeSummary = status.runtimeStatus?.summary;
+      const runtimeDetails = status.runtimeStatus?.details;
+      const model =
+        getStringField(status.runtimeOptions, "model") ??
+        getConfigOptionValue(runtimeDetails, "model");
+      const thinking =
+        getStringField(status.runtimeOptions, "thinking") ??
+        getStringField(status.runtimeOptions, "effort") ??
+        getConfigOptionValue(runtimeDetails, "effort");
+      const cwd =
+        getStringField(status.runtimeOptions, "cwd") ?? getStringField(runtimeDetails, "cwd");
+      const runtimeLine = formatRuntimeLine({
+        details: runtimeDetails,
+        summary: runtimeSummary,
       });
       const lines = [
         "ACP status:",
         "-----",
-        `session: ${status.sessionKey}`,
-        `backend: ${status.backend}`,
-        `agent: ${status.agent}`,
-        ...sessionIdentifierLines,
-        `sessionMode: ${status.mode}`,
-        `state: ${status.state}`,
+        formatStateLine(status.state, runtimeDetails, runtimeSummary),
+        `Agent: ${status.agent} via ${status.backend}`,
+        ...(model ? [`Model: ${model}`] : []),
+        ...(thinking ? [`Thinking: ${thinking}`] : []),
+        ...(cwd ? [`Cwd: ${cwd}`] : []),
+        `Mode: ${status.mode}`,
+        ...(runtimeLine ? [runtimeLine] : []),
+        `Last active: ${formatTimestamp(status.lastActivityAt)}`,
+        `Session: ${formatShortSessionKey(status.sessionKey)}`,
         ...(linkedTask
           ? [
-              `taskId: ${linkedTask.taskId}`,
-              `taskStatus: ${linkedTask.status}`,
-              `delivery: ${linkedTask.deliveryStatus}`,
-              ...(taskProgress ? [`taskProgress: ${taskProgress}`] : []),
-              ...(taskSummary ? [`taskSummary: ${taskSummary}`] : []),
-              ...(taskError ? [`taskError: ${taskError}`] : []),
+              `Task: ${linkedTask.status}${
+                linkedTask.deliveryStatus ? ` (${linkedTask.deliveryStatus})` : ""
+              }`,
+              ...(taskProgress ? [`Progress: ${taskProgress}`] : []),
+              ...(taskSummary ? [`Summary: ${taskSummary}`] : []),
+              ...(taskError ? [`Task error: ${taskError}`] : []),
               ...(typeof linkedTask.lastEventAt === "number"
-                ? [`taskUpdatedAt: ${new Date(linkedTask.lastEventAt).toISOString()}`]
+                ? [`Task updated: ${formatTimestamp(linkedTask.lastEventAt)}`]
                 : []),
             ]
           : []),
-        `runtimeOptions: ${formatRuntimeOptionsText(status.runtimeOptions)}`,
-        `capabilities: ${formatAcpCapabilitiesText(status.capabilities.controls)}`,
-        `lastActivityAt: ${new Date(status.lastActivityAt).toISOString()}`,
-        ...(lastError ? [`lastError: ${lastError}`] : []),
-        ...(runtimeSummary ? [`runtime: ${runtimeSummary}`] : []),
-        ...(runtimeDetails ? [`runtimeDetails: ${runtimeDetails}`] : []),
+        ...(lastError ? [`Last error: ${lastError}`] : []),
+        "",
+        "Manage: /acp close | /acp model <model> | /acp set thinking high",
       ];
       return stopWithText(lines.join("\n"));
     },
