@@ -530,6 +530,7 @@ function createAcpSessionEntry(options?: {
   sessionKey?: string;
   state?: "idle" | "running";
   identity?: AcpSessionIdentity;
+  runtimeOptions?: Record<string, unknown>;
 }) {
   const sessionKey = options?.sessionKey ?? defaultAcpSessionKey;
   return {
@@ -543,6 +544,7 @@ function createAcpSessionEntry(options?: {
       mode: "persistent",
       state: options?.state ?? "idle",
       lastActivityAt: Date.now(),
+      ...(options?.runtimeOptions ? { runtimeOptions: options.runtimeOptions } : {}),
     },
   };
 }
@@ -678,6 +680,7 @@ function mockBoundThreadSession(options?: {
   sessionKey?: string;
   state?: "idle" | "running";
   identity?: AcpSessionIdentity;
+  runtimeOptions?: Record<string, unknown>;
 }) {
   const sessionKey = options?.sessionKey ?? defaultAcpSessionKey;
   hoisted.sessionBindingResolveByConversationMock.mockReturnValue(
@@ -688,6 +691,7 @@ function mockBoundThreadSession(options?: {
       sessionKey,
       state: options?.state,
       identity: options?.identity,
+      runtimeOptions: options?.runtimeOptions,
     }),
   );
 }
@@ -1747,6 +1751,11 @@ describe("/acp command", () => {
         agentSessionId: "codex-sid-1",
         lastUpdatedAt: Date.now(),
       },
+      runtimeOptions: {
+        model: "gpt-5.5",
+        cwd: "/Users/lianglin/Projects/mission-control",
+        thinking: "high",
+      },
     });
     createTaskRecord({
       runtime: "acp",
@@ -1761,12 +1770,17 @@ describe("/acp command", () => {
     const result = await runThreadAcpCommand("/acp status", baseCfg);
 
     expect(result?.reply?.text).toContain("ACP status:");
-    expect(result?.reply?.text).toContain(`session: ${defaultAcpSessionKey}`);
-    expect(result?.reply?.text).toContain("agent session id: codex-sid-1");
-    expect(result?.reply?.text).toContain("acpx session id: acpx-sid-1");
-    expect(result?.reply?.text).toContain("taskStatus: running");
-    expect(result?.reply?.text).toContain("taskProgress: Fetching the latest runtime state");
-    expect(result?.reply?.text).toContain("capabilities:");
+    expect(result?.reply?.text).toContain("Status: idle (ready)");
+    expect(result?.reply?.text).toContain("Agent: codex via acpx");
+    expect(result?.reply?.text).toContain("Model: gpt-5.5");
+    expect(result?.reply?.text).toContain("Thinking: high");
+    expect(result?.reply?.text).toContain("Cwd: /Users/lianglin/Projects/mission-control");
+    expect(result?.reply?.text).toContain("Task: running");
+    expect(result?.reply?.text).toContain("Progress: Fetching the latest runtime state");
+    expect(result?.reply?.text).toContain("Session: s1");
+    expect(result?.reply?.text).not.toContain("runtimeDetails:");
+    expect(result?.reply?.text).not.toContain("capabilities:");
+    expect(result?.reply?.text).not.toContain("acpx record id:");
     expect(hoisted.getStatusMock).toHaveBeenCalledTimes(1);
   });
 
@@ -1851,9 +1865,10 @@ describe("/acp command", () => {
     const result = await runThreadAcpCommand("/acp status", baseCfg);
 
     expect(result?.reply?.text).toContain("ACP status:");
-    expect(result?.reply?.text).toContain("taskSummary: Needs approval to continue.");
+    expect(result?.reply?.text).toContain("Summary: Needs approval to continue.");
     expect(result?.reply?.text).not.toContain("OpenClaw runtime context (internal):");
     expect(result?.reply?.text).not.toContain("Internal task completion event");
+    expect(result?.reply?.text).not.toContain("runtimeDetails:");
   });
 
   it("updates ACP runtime mode via /acp set-mode", async () => {

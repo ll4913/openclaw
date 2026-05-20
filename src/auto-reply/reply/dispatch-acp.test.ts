@@ -1889,6 +1889,35 @@ describe("tryDispatchAcpReply", () => {
     expect(dispatcherCall(dispatcher.sendFinalReply).text).toBe("Slack says hi.");
   });
 
+  it("finalizes Telegram live ACP block text as a final fallback", async () => {
+    setReadyAcpResolution();
+    ttsMocks.resolveTtsConfig.mockReturnValue({ mode: "final" });
+    mockVisibleTextTurn("LIVE_OK");
+
+    const { dispatcher } = createDispatcher();
+    const result = await runDispatch({
+      bodyForAgent: "reply",
+      dispatcher,
+      cfg: createAcpTestConfig({
+        acp: {
+          enabled: true,
+          stream: {
+            deliveryMode: "live",
+          },
+        },
+      }),
+      ctxOverrides: {
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+    });
+
+    expect(result?.queuedFinal).toBe(true);
+    expect(dispatcher.sendBlockReply).toHaveBeenCalledTimes(1);
+    expect(dispatcherCall(dispatcher.sendBlockReply).text).toBe("LIVE_OK");
+    expect(dispatcherCall(dispatcher.sendFinalReply).text).toBe("LIVE_OK");
+  });
+
   it("treats Telegram ACP final delivery as a successful final response", async () => {
     setReadyAcpResolution();
     ttsMocks.resolveTtsConfig.mockReturnValue({ mode: "final" });
@@ -2019,7 +2048,7 @@ describe("tryDispatchAcpReply", () => {
     expect(result?.queuedFinal).toBe(true);
   });
 
-  it("finalizes live Telegram ACP block output even when block preview delivery reports success", async () => {
+  it("finalizes live Telegram ACP block output when block preview delivery reports success", async () => {
     setReadyAcpResolution();
     const cfg = createAcpTestConfig({
       acp: {
