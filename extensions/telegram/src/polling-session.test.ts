@@ -1884,6 +1884,88 @@ describe("TelegramPollingSession", () => {
     }
   });
 
+  it("restarts isolated ingress on getUpdates conflict without exiting the channel", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const abort = new AbortController();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-telegram-spool-"));
+    const log = vi.fn();
+    const setStatus = vi.fn();
+    isRecoverableTelegramNetworkErrorMock.mockReturnValue(false);
+    createTelegramBotMock.mockImplementation(() => ({
+      api: {
+        deleteWebhook: vi.fn(async () => true),
+        config: { use: vi.fn() },
+      },
+      init: vi.fn(async () => undefined),
+      handleUpdate: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    }));
+
+    let workerTaskCalls = 0;
+    let listener: WorkerPollErrorListener | undefined;
+    const createWorker = vi.fn(() => {
+      let stopWorker: (() => void) | undefined;
+      const workerDone = new Promise<void>((resolve) => {
+        stopWorker = resolve;
+      });
+      return {
+        onMessage: vi.fn((next: WorkerPollErrorListener) => {
+          listener = next;
+          return () => undefined;
+        }),
+        stop: vi.fn(async () => {
+          stopWorker?.();
+        }),
+        task: vi.fn(async () => {
+          workerTaskCalls += 1;
+          if (workerTaskCalls === 1) {
+            listener?.({
+              type: "poll-error",
+              message:
+                "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+              finishedAt: Date.now(),
+            });
+            throw new Error("Telegram ingress worker exited with code 1");
+          }
+          await workerDone;
+        }),
+      };
+    });
+
+    try {
+      const session = createPollingSession({
+        abortSignal: abort.signal,
+        log,
+        setStatus,
+        isolatedIngress: {
+          enabled: true,
+          spoolDir: tempDir,
+          createWorker,
+          drainIntervalMs: 100,
+        },
+      });
+
+      const runPromise = session.runUntilAbort();
+      await vi.waitFor(() => expect(createWorker).toHaveBeenCalledTimes(2));
+      expectLogIncludes(log, "isolated polling cycle error reason=getUpdates conflict");
+      expectLogIncludes(log, "Another OpenClaw gateway, script, or Telegram poller");
+      expect(
+        statusPatches(setStatus).some(
+          (patch) =>
+            patch.connected === false &&
+            String(patch.lastError).includes("terminated by other getUpdates request"),
+        ),
+      ).toBe(true);
+
+      abort.abort();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await runPromise;
+    } finally {
+      vi.useRealTimers();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("treats isolated ingress worker rejection after abort as clean shutdown", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const abort = new AbortController();

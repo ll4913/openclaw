@@ -894,18 +894,36 @@ export class TelegramPollingSession {
         if (this.opts.abortSignal?.aborted) {
           return "exit";
         }
-        if (
-          pollState.error &&
-          !isRecoverableTelegramNetworkError(new Error(pollState.error), { context: "polling" })
-        ) {
+        const pollError = pollState.error ? new Error(pollState.error) : err;
+        const isConflict = isGetUpdatesConflict(pollError);
+        const isRecoverable = isRecoverableTelegramNetworkError(pollError, {
+          context: "polling",
+        });
+        if (isConflict) {
+          this.#webhookCleared = false;
+          this.#transportState.markDirty();
+        }
+        if (pollState.error && !isConflict && !isRecoverable) {
           this.#status.notePollingError(pollState.error);
           throw new Error(pollState.error, { cause: err });
         }
         const message = formatErrorMessage(err);
-        this.opts.log(`[telegram][diag] isolated polling ingress failed: ${message}`);
-        this.#status.notePollingError(message);
-        const shouldRestart = await this.#waitBeforeRestart(
-          (delay) => `Telegram isolated polling ingress failed; restarting in ${delay}.`,
+        const errorMessage = pollState.error ?? message;
+        const conflictHint = isConflict
+          ? " Another OpenClaw gateway, script, or Telegram poller may be using this bot token; stop the duplicate poller or switch this account to webhook mode."
+          : "";
+        if (isConflict) {
+          this.opts.log(
+            `[telegram][diag] isolated polling cycle error reason=getUpdates conflict err=${errorMessage}${conflictHint}`,
+          );
+        } else {
+          this.opts.log(`[telegram][diag] isolated polling ingress failed: ${message}`);
+        }
+        this.#status.notePollingError(errorMessage);
+        const shouldRestart = await this.#waitBeforeRestart((delay) =>
+          isConflict
+            ? `Telegram isolated polling getUpdates conflict: ${errorMessage};${conflictHint} restarting in ${delay}.`
+            : `Telegram isolated polling ingress failed; restarting in ${delay}.`,
         );
         return shouldRestart ? "continue" : "exit";
       }
@@ -1108,23 +1126,29 @@ export class TelegramPollingSession {
 }
 
 const isGetUpdatesConflict = (err: unknown) => {
-  if (!err || typeof err !== "object") {
-    return false;
-  }
-  const typed = err as {
-    error_code?: number;
-    errorCode?: number;
-    description?: string;
-    method?: string;
-    message?: string;
-  };
-  const errorCode = typed.error_code ?? typed.errorCode;
-  if (errorCode !== 409) {
-    return false;
-  }
-  const haystack = [typed.method, typed.description, typed.message]
+  const typed =
+    err && typeof err === "object"
+      ? (err as {
+          error_code?: number;
+          errorCode?: number;
+          description?: string;
+          method?: string;
+          message?: string;
+        })
+      : undefined;
+  const errorCode = typed?.error_code ?? typed?.errorCode;
+  const haystack = [typed?.method, typed?.description, typed?.message, formatErrorMessage(err)]
     .filter((value): value is string => typeof value === "string")
     .join(" ");
   const normalizedHaystack = normalizeLowercaseStringOrEmpty(haystack);
-  return normalizedHaystack.includes("getupdates");
+  const mentionsGetUpdates = normalizedHaystack.includes("getupdates");
+  if (!mentionsGetUpdates) {
+    return false;
+  }
+  if (errorCode === 409) {
+    return true;
+  }
+  return (
+    normalizedHaystack.includes("conflict") && normalizedHaystack.includes("terminated by other")
+  );
 };
