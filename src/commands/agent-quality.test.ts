@@ -53,13 +53,14 @@ describe("agent quality gate", () => {
     const report = await runAgentQualityGate({ repoRoot: "/repo" }, healthyDeps());
 
     expect(report.overall).toBe("pass");
-    expect(report.summary).toEqual({ pass: 7, warn: 0, fail: 0 });
+    expect(report.summary).toEqual({ pass: 8, warn: 0, fail: 0 });
     expect(report.checks.map((check) => check.id)).toEqual([
       "gateway-liveness",
       "gateway-readiness",
       "health",
       "telegram-channels",
       "gateway-log",
+      "artifact-integrity",
       "environment-doctor",
       "regression-coverage",
     ]);
@@ -170,7 +171,7 @@ describe("agent quality gate", () => {
     const check = report.checks.find((entry) => entry.id === "gateway-log");
     expect(report.overall).toBe("fail");
     expect(check?.status).toBe("fail");
-    expect(check?.summary).toContain("recent fatal");
+    expect(check?.summary).toContain("active fatal");
   });
 
   it("warns on recoverable Telegram polling conflicts", async () => {
@@ -302,7 +303,7 @@ describe("agent quality gate", () => {
     expect(report.likelyCauses.map((cause) => cause.id)).not.toContain("provider_auth_error");
   });
 
-  it("classifies missing dist modules as runtime artifact drift", async () => {
+  it("fails artifact integrity when a missing dist module is still absent", async () => {
     const report = await runAgentQualityGate(
       { repoRoot: "/repo", sinceMinutes: 15 },
       healthyDeps({
@@ -313,15 +314,78 @@ describe("agent quality gate", () => {
             JSON.stringify({
               time: "2026-05-21T07:58:00.000Z",
               level: "error",
-              message:
-                "lane task error: Error: Cannot find module '/Users/lianglin/openclaw/dist/plugin-sdk/channel-targets.js'",
+              message: "lane task error: Error: Cannot find module '/repo/dist/runtime-old.js'",
             }),
           ].join("\n"),
+        pathExists: async (filePath) => filePath !== "/repo/dist/runtime-old.js",
       }),
     );
 
+    const artifactCheck = report.checks.find((entry) => entry.id === "artifact-integrity");
+    const logCheck = report.checks.find((entry) => entry.id === "gateway-log");
     expect(report.overall).toBe("fail");
+    expect(artifactCheck?.status).toBe("fail");
+    expect(artifactCheck?.details).toContain("missing_now: /repo/dist/runtime-old.js");
+    expect(logCheck?.status).toBe("fail");
+    expect(logCheck?.summary).toContain("active fatal");
     expect(report.likelyCauses.map((cause) => cause.id)).toContain("dist_artifact_missing");
     expect(report.runbook.map((item) => item.id)).toContain("dist_artifact_missing");
+  });
+
+  it("downgrades resolved missing dist module log entries to stale references", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            "GEMINI_API_KEY=test-gemini",
+            "XAI_API_KEY=test-xai",
+            JSON.stringify({
+              time: "2026-05-21T07:58:00.000Z",
+              level: "error",
+              message: "lane task error: Error: Cannot find module '/repo/dist/runtime-rebuilt.js'",
+            }),
+          ].join("\n"),
+        pathExists: async () => true,
+      }),
+    );
+
+    const artifactCheck = report.checks.find((entry) => entry.id === "artifact-integrity");
+    const logCheck = report.checks.find((entry) => entry.id === "gateway-log");
+    expect(report.overall).toBe("warn");
+    expect(artifactCheck?.status).toBe("warn");
+    expect(artifactCheck?.details).toContain("stale_reference: /repo/dist/runtime-rebuilt.js");
+    expect(logCheck?.status).toBe("warn");
+    expect(logCheck?.summary).toContain("recoverable/resolved");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("dist_artifact_missing");
+    expect(report.runbook.map((item) => item.id)).toContain("dist_artifact_missing");
+  });
+
+  it("keeps old missing dist module log entries historical outside the active window", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            "GEMINI_API_KEY=test-gemini",
+            "XAI_API_KEY=test-xai",
+            JSON.stringify({
+              time: "2026-05-21T07:00:00.000Z",
+              level: "error",
+              message:
+                "lane task error: Error: Cannot find module '/repo/dist/runtime-historical.js'",
+            }),
+          ].join("\n"),
+        pathExists: async (filePath) => filePath !== "/repo/dist/runtime-historical.js",
+      }),
+    );
+
+    const artifactCheck = report.checks.find((entry) => entry.id === "artifact-integrity");
+    const logCheck = report.checks.find((entry) => entry.id === "gateway-log");
+    expect(report.overall).toBe("pass");
+    expect(logCheck?.status).toBe("pass");
+    expect(artifactCheck?.status).toBe("pass");
+    expect(artifactCheck?.summary).toContain("historical");
+    expect(artifactCheck?.details).toContain("historical: /repo/dist/runtime-historical.js");
   });
 });
