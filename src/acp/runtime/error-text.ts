@@ -1,4 +1,5 @@
 import { type AcpRuntimeErrorCode, AcpRuntimeError, toAcpRuntimeError } from "./errors.js";
+import { classifyAcpTransientTransportErrorText } from "./transport-errors.js";
 
 function resolveAcpRuntimeErrorNextStep(error: AcpRuntimeError): string | undefined {
   if (error.code === "ACP_BACKEND_MISSING" || error.code === "ACP_BACKEND_UNAVAILABLE") {
@@ -22,7 +23,27 @@ function resolveAcpRuntimeErrorNextStep(error: AcpRuntimeError): string | undefi
   return undefined;
 }
 
+function formatTransientTurnFailure(error: AcpRuntimeError): string | null {
+  if (error.code !== "ACP_TURN_FAILED") {
+    return null;
+  }
+  const transportError = classifyAcpTransientTransportErrorText(error.message);
+  if (!transportError) {
+    return null;
+  }
+  return [
+    `ACP error (${error.code}): ACP turn was interrupted by a transient network/provider stream disconnect.`,
+    `detail: ${transportError.summary}.`,
+    "I did not drop this message; the ACP binding is still active.",
+    "next: Retry shortly. If this repeats, switch model or recreate the ACP worker, then run `openclaw agent-quality check --since-minutes 15`.",
+  ].join("\n");
+}
+
 export function formatAcpRuntimeErrorText(error: AcpRuntimeError): string {
+  const transientTurnFailure = formatTransientTurnFailure(error);
+  if (transientTurnFailure) {
+    return transientTurnFailure;
+  }
   const next = resolveAcpRuntimeErrorNextStep(error);
   if (!next) {
     return `ACP error (${error.code}): ${error.message}`;

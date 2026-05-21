@@ -1471,6 +1471,28 @@ describe("tryDispatchAcpReply", () => {
     );
   });
 
+  it("surfaces transient ACP stream disconnects as short visible final replies", async () => {
+    setReadyAcpResolution();
+    managerMocks.runTurn.mockRejectedValueOnce(
+      new Error(
+        `Handled error during turn: Reconnecting... 5/5 Some(ResponseStreamDisconnected { http_status_code: None }) Some("stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)")`,
+      ),
+    );
+    const { dispatcher } = createDispatcher();
+
+    await runDispatch({
+      bodyForAgent: "上海未来一周的天气怎么样",
+      dispatcher,
+    });
+
+    const reply = dispatcherCall(dispatcher.sendFinalReply);
+    expect(reply.isError).toBe(true);
+    expect(reply.text).toContain("transient network/provider stream disconnect");
+    expect(reply.text).toContain("I did not drop this message");
+    expect(reply.text).not.toContain("https://chatgpt.com/backend-api/codex/responses");
+    expect(bindingServiceMocks.unbind).not.toHaveBeenCalled();
+  });
+
   it("unbinds stale bindings on ACP runTurn missing-metadata failures", async () => {
     const aliasSessionKey = "main";
     const canonicalSessionKey = "agent:main:main";
