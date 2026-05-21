@@ -19,10 +19,33 @@ export type AgentQualityCheck = {
   details?: string[];
 };
 
+export type AgentQualityCauseId =
+  | "dist_artifact_missing"
+  | "duplicate_telegram_poller"
+  | "gateway_restart_window"
+  | "memory_pressure"
+  | "provider_auth_error"
+  | "rpc_timeout_or_stall";
+
+export type AgentQualityCause = {
+  id: AgentQualityCauseId;
+  status: AgentQualityStatus;
+  summary: string;
+  evidence: string[];
+};
+
+export type AgentQualityRunbookSuggestion = {
+  id: AgentQualityCauseId;
+  title: string;
+  steps: string[];
+};
+
 export type AgentQualityReport = {
   generatedAt: string;
   overall: AgentQualityStatus;
   checks: AgentQualityCheck[];
+  likelyCauses: AgentQualityCause[];
+  runbook: AgentQualityRunbookSuggestion[];
   logFile?: string | null;
   summary: {
     pass: number;
@@ -213,6 +236,162 @@ function resolveOverall(checks: AgentQualityCheck[]): AgentQualityStatus {
     (current, check) => (statusRank(check.status) > statusRank(current) ? check.status : current),
     "pass",
   );
+}
+
+function collectCheckText(checks: AgentQualityCheck[]): string[] {
+  return checks.flatMap((check) => [
+    `${check.name}: ${check.summary}`,
+    ...(check.details ?? []).map((detail) => `${check.name}: ${detail}`),
+  ]);
+}
+
+function findEvidence(lines: string[], patterns: RegExp[], limit = 3): string[] {
+  const evidence: string[] = [];
+  for (const line of lines) {
+    if (!patterns.some((pattern) => pattern.test(line))) {
+      continue;
+    }
+    if (!evidence.includes(line)) {
+      evidence.push(line);
+    }
+    if (evidence.length >= limit) {
+      break;
+    }
+  }
+  return evidence;
+}
+
+function buildCause(
+  id: AgentQualityCauseId,
+  status: AgentQualityStatus,
+  summary: string,
+  evidence: string[],
+): AgentQualityCause | null {
+  return evidence.length > 0 ? { id, status, summary, evidence } : null;
+}
+
+function classifyLikelyCauses(checks: AgentQualityCheck[]): AgentQualityCause[] {
+  const lines = collectCheckText(checks);
+  const causes = [
+    buildCause(
+      "dist_artifact_missing",
+      "warn",
+      "A required runtime artifact is missing; rebuild before trusting gateway startup.",
+      findEvidence(lines, [
+        /dist\/telegram-ingress-worker\.runtime\.js missing/u,
+        /Cannot find module .*\/dist\//u,
+        /dist\/plugin-sdk\//u,
+      ]),
+    ),
+    buildCause(
+      "duplicate_telegram_poller",
+      "warn",
+      "Telegram getUpdates conflicts suggest a duplicate or stale poller for at least one bot token.",
+      findEvidence(lines, [/getUpdates conflict/u, /terminated by other getUpdates request/u]),
+    ),
+    buildCause(
+      "gateway_restart_window",
+      "warn",
+      "Recent gateway restart/stale-process events may explain transient probe failures.",
+      findEvidence(lines, [/stale gateway process/u, /\brestart(?:ing|ed)?\b/u]),
+    ),
+    buildCause(
+      "memory_pressure",
+      "warn",
+      "Gateway RSS/heap pressure is above the warning threshold and can slow CLI/RPC probes.",
+      findEvidence(lines, [/memory pressure/u, /rss_threshold/u]),
+    ),
+    buildCause(
+      "provider_auth_error",
+      "fail",
+      "Provider authentication errors are present and may block agent turns.",
+      findEvidence(lines, [
+        /\bauth(?:entication)? errors?\b/iu,
+        /Missing API key/iu,
+        /(?:HTTP|status|code|errorCode|response)[^\n]{0,40}\b401\b/iu,
+        /\b401 Unauthorized\b/iu,
+        /Invalid authentication credentials/iu,
+      ]),
+    ),
+    buildCause(
+      "rpc_timeout_or_stall",
+      "fail",
+      "Gateway RPC/readiness path is timing out or closing abnormally while liveness may still be true.",
+      findEvidence(lines, [
+        /timed out after \d+ms/u,
+        /gateway timeout/u,
+        /1006 abnormal closure/u,
+        /gateway closed/u,
+        /connect EPERM/u,
+      ]),
+    ),
+  ];
+  return causes.filter((cause): cause is AgentQualityCause => Boolean(cause));
+}
+
+function buildRunbook(causes: AgentQualityCause[]): AgentQualityRunbookSuggestion[] {
+  const byId = new Map(causes.map((cause) => [cause.id, cause]));
+  const suggestions: AgentQualityRunbookSuggestion[] = [];
+  const add = (suggestion: AgentQualityRunbookSuggestion) => {
+    if (byId.has(suggestion.id)) {
+      suggestions.push(suggestion);
+    }
+  };
+  add({
+    id: "rpc_timeout_or_stall",
+    title: "Separate liveness from readiness before restarting anything",
+    steps: [
+      "Run `openclaw gateway status --deep --require-rpc` to capture listener, pid, config, and RPC state.",
+      "If liveness passes but RPC/readiness fails, inspect event-loop and memory warnings before restarting.",
+      "Use `openclaw channels status --timeout 3000` as the delivery-readiness smoke after any fix.",
+    ],
+  });
+  add({
+    id: "duplicate_telegram_poller",
+    title: "Find and stop duplicate Telegram pollers",
+    steps: [
+      "Search running processes for old gateway or Telegram poller instances that may share a bot token.",
+      "Prefer stopping the stale poller over rotating tokens; token rotation hides the duplicate-owner bug.",
+      "After cleanup, verify the log shows isolated ingress restart without a channel-exited event.",
+    ],
+  });
+  add({
+    id: "memory_pressure",
+    title: "Reduce gateway memory pressure before blaming channel code",
+    steps: [
+      "Capture RSS/heap trend from recent gateway logs and note whether pressure rises every five minutes.",
+      "Check recent plugin/session activity for large transcript or LCM operations.",
+      "If pressure keeps rising, restart only after preserving the log window for leak analysis.",
+    ],
+  });
+  add({
+    id: "dist_artifact_missing",
+    title: "Rebuild runtime artifacts before gateway restart",
+    steps: [
+      "Run `pnpm build` from the OpenClaw checkout and confirm `dist/telegram-ingress-worker.runtime.js` exists.",
+      "Restart gateway only after the artifact exists, so launchd does not start a half-built dist.",
+      "Keep the build/restart order in the incident note because this failure is time-window sensitive.",
+    ],
+  });
+  add({
+    id: "gateway_restart_window",
+    title: "Treat recent restart windows as transient until proven persistent",
+    steps: [
+      "Correlate probe failures with stale gateway pid cleanup or LaunchAgent restart timestamps.",
+      "Retry readiness after the startup grace window before escalating to auth/channel fixes.",
+      "If restart loops continue, inspect service env and dist artifact state first.",
+    ],
+  });
+  add({
+    id: "provider_auth_error",
+    title: "Repair credential source before retrying agent turns",
+    steps: [
+      "Identify the failing provider and agent from the auth error cluster; do not rotate unrelated keys.",
+      "Prefer provider-native login/refresh for OAuth-backed providers instead of copying token material.",
+      "Run a real agent smoke after repair and record the provider/model that actually won.",
+    ],
+  });
+  return suggestions;
 }
 
 function parseSinceMinutes(value: AgentQualityOptions["sinceMinutes"]): number {
@@ -559,6 +738,19 @@ function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }
       failures.push(message);
       continue;
     }
+    if (/Cannot find module .*\/dist\//u.test(message)) {
+      failures.push(message);
+      continue;
+    }
+    if (
+      /Missing API key/iu.test(message) ||
+      /(?:HTTP|status|code|errorCode|response)[^\n]{0,40}\b401\b/iu.test(message) ||
+      /\b401 Unauthorized\b/iu.test(message) ||
+      /Invalid authentication credentials/iu.test(message)
+    ) {
+      failures.push(message);
+      continue;
+    }
     if (/isolated polling cycle error reason=getUpdates conflict/u.test(message)) {
       warnings.push(message);
       continue;
@@ -852,10 +1044,13 @@ export async function runAgentQualityGate(
   );
   checks.push(await analyzeRegressionCoverage({ deps, repoRoot }));
 
+  const likelyCauses = classifyLikelyCauses(checks);
   return {
     generatedAt: now.toISOString(),
     overall: resolveOverall(checks),
     checks,
+    likelyCauses,
+    runbook: buildRunbook(likelyCauses),
     logFile,
     summary: summarizeOverall(checks),
   };
@@ -869,6 +1064,24 @@ export function formatAgentQualityReport(report: AgentQualityReport): string {
   const lines = [`Agent Quality Gate: ${formatStatus(report.overall)}`, ""];
   for (const check of report.checks) {
     lines.push(`${check.name}: ${formatStatus(check.status)} - ${check.summary}`);
+  }
+  if (report.likelyCauses.length > 0) {
+    lines.push("", "Likely Causes:");
+    for (const cause of report.likelyCauses.slice(0, 8)) {
+      lines.push(`- ${cause.id}: ${formatStatus(cause.status)} - ${cause.summary}`);
+      for (const evidence of cause.evidence.slice(0, 2)) {
+        lines.push(`  evidence: ${evidence}`);
+      }
+    }
+  }
+  if (report.runbook.length > 0) {
+    lines.push("", "Suggested Runbook:");
+    for (const item of report.runbook.slice(0, 5)) {
+      lines.push(`- ${item.title}`);
+      for (const step of item.steps.slice(0, 3)) {
+        lines.push(`  - ${step}`);
+      }
+    }
   }
   const failures = report.checks.flatMap((check) =>
     check.status === "fail" && check.details?.length

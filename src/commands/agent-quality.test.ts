@@ -128,6 +128,8 @@ describe("agent quality gate", () => {
     expect(report.checks.find((entry) => entry.id === "telegram-channels")?.summary).toBe(
       "gateway closed",
     );
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("rpc_timeout_or_stall");
+    expect(report.runbook.map((item) => item.id)).toContain("rpc_timeout_or_stall");
   });
 
   it("fails gateway probes quickly when a command exceeds the probe budget", async () => {
@@ -196,7 +198,32 @@ describe("agent quality gate", () => {
     expect(check?.status).toBe("warn");
     expect(check?.summary).toContain("2 recent");
     expect(check?.details).toHaveLength(1);
-    expect(formatAgentQualityReport(report)).toContain("Agent Quality Gate: WARN");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("duplicate_telegram_poller");
+    expect(report.runbook.map((item) => item.id)).toContain("duplicate_telegram_poller");
+    expect(formatAgentQualityReport(report)).toContain("Likely Causes:");
+  });
+
+  it("classifies memory pressure and gives a runbook suggestion", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            JSON.stringify({
+              time: "2026-05-21T07:58:00.000Z",
+              level: "warn",
+              message:
+                "memory pressure: level=warning reason=rss_threshold rssBytes=2200000000 heapUsedBytes=600000000 thresholdBytes=1610612736",
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    expect(report.overall).toBe("warn");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("memory_pressure");
+    expect(report.runbook.find((item) => item.id === "memory_pressure")?.steps[0]).toContain(
+      "RSS/heap trend",
+    );
   });
 
   it("warns when expected ACP and Telegram regression tests are missing", async () => {
@@ -231,5 +258,70 @@ describe("agent quality gate", () => {
     );
     expect(check?.details).toContain("dist/telegram-ingress-worker.runtime.js missing");
     expect(JSON.stringify(check)).not.toContain("test-gemini");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("dist_artifact_missing");
+    expect(report.runbook.map((item) => item.id)).toContain("dist_artifact_missing");
+  });
+
+  it("classifies provider auth errors when logs contain auth failure evidence", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            JSON.stringify({
+              time: "2026-05-21T07:58:00.000Z",
+              level: "error",
+              message: 'Missing API key for provider "openai-codex"',
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("provider_auth_error");
+    expect(report.runbook.map((item) => item.id)).toContain("provider_auth_error");
+  });
+
+  it("does not classify timestamp millisecond 401 values as provider auth errors", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            "GEMINI_API_KEY=test-gemini",
+            "XAI_API_KEY=test-xai",
+            JSON.stringify({
+              time: "2026-05-21T13:30:04.401+08:00",
+              level: "info",
+              message: "[lcm] auto-rotate: phase=runtime action=skip reason=below-threshold",
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    expect(report.overall).toBe("pass");
+    expect(report.likelyCauses.map((cause) => cause.id)).not.toContain("provider_auth_error");
+  });
+
+  it("classifies missing dist modules as runtime artifact drift", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            "GEMINI_API_KEY=test-gemini",
+            "XAI_API_KEY=test-xai",
+            JSON.stringify({
+              time: "2026-05-21T07:58:00.000Z",
+              level: "error",
+              message:
+                "lane task error: Error: Cannot find module '/Users/lianglin/openclaw/dist/plugin-sdk/channel-targets.js'",
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    expect(report.overall).toBe("fail");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("dist_artifact_missing");
+    expect(report.runbook.map((item) => item.id)).toContain("dist_artifact_missing");
   });
 });
