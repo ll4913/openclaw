@@ -12,6 +12,11 @@ const subCliCommandCatalog = defineCommandDescriptorCatalog([
     hasSubcommands: true,
   },
   {
+    name: "agent-quality",
+    description: "Run read-only quality gates for OpenClaw agents",
+    hasSubcommands: true,
+  },
+  {
     name: "daemon",
     description: "Manage the Gateway service (legacy alias)",
     hasSubcommands: true,

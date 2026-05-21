@@ -93,6 +93,11 @@ const entrySpecs: readonly CommandGroupDescriptorSpec<SubCliRegistrar>[] = [
       exportName: "registerGatewayCli",
     },
     {
+      commandNames: ["agent-quality"],
+      loadModule: () => import("../agent-quality-cli.js"),
+      exportName: "registerAgentQualityCli",
+    },
+    {
       commandNames: ["daemon"],
       loadModule: () => import("../daemon-cli.js"),
       exportName: "registerDaemonCli",
