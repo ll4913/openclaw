@@ -3,6 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isAcpTransientTransportErrorText } from "../acp/runtime/transport-errors.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { type OutputRuntimeEnv, type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { channelsStatusCommand } from "./channels/status.js";
@@ -25,7 +26,8 @@ export type AgentQualityCauseId =
   | "gateway_restart_window"
   | "memory_pressure"
   | "provider_auth_error"
-  | "rpc_timeout_or_stall";
+  | "rpc_timeout_or_stall"
+  | "transient_transport_disconnect";
 
 export type AgentQualityCause = {
   id: AgentQualityCauseId;
@@ -269,6 +271,22 @@ function findEvidence(lines: string[], patterns: RegExp[], limit = 3): string[] 
   return evidence;
 }
 
+function findTransientTransportEvidence(lines: string[], limit = 3): string[] {
+  const evidence: string[] = [];
+  for (const line of lines) {
+    if (!isAcpTransientTransportErrorText(line)) {
+      continue;
+    }
+    if (!evidence.includes(line)) {
+      evidence.push(line);
+    }
+    if (evidence.length >= limit) {
+      break;
+    }
+  }
+  return evidence;
+}
+
 function buildCause(
   id: AgentQualityCauseId,
   status: AgentQualityStatus,
@@ -321,6 +339,12 @@ function classifyLikelyCauses(checks: AgentQualityCheck[]): AgentQualityCause[] 
         /\b401 Unauthorized\b/iu,
         /Invalid authentication credentials/iu,
       ]),
+    ),
+    buildCause(
+      "transient_transport_disconnect",
+      "fail",
+      "Provider/network stream disconnects interrupted ACP turns; retry should stay visible and bounded.",
+      findTransientTransportEvidence(lines),
     ),
     buildCause(
       "rpc_timeout_or_stall",
@@ -398,6 +422,15 @@ function buildRunbook(causes: AgentQualityCause[]): AgentQualityRunbookSuggestio
       "Identify the failing provider and agent from the auth error cluster; do not rotate unrelated keys.",
       "Prefer provider-native login/refresh for OAuth-backed providers instead of copying token material.",
       "Run a real agent smoke after repair and record the provider/model that actually won.",
+    ],
+  });
+  add({
+    id: "transient_transport_disconnect",
+    title: "Retry ACP after transient provider or socket disconnect",
+    steps: [
+      "Ask the bound ACP worker to retry the same user turn once the stream path settles.",
+      "If two retries fail in the same chat, switch to a different configured model/provider for that ACP session.",
+      "Run `openclaw agent-quality check --since-minutes 15` and keep the log window if failures cluster.",
     ],
   });
   return suggestions;

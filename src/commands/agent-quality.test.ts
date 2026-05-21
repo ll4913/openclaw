@@ -174,6 +174,32 @@ describe("agent quality gate", () => {
     expect(check?.summary).toContain("active fatal");
   });
 
+  it("classifies transient provider stream disconnects and gives a retry runbook", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            JSON.stringify({
+              time: "2026-05-21T07:55:00.000Z",
+              level: "error",
+              message:
+                'ACP_TURN_FAILED Handled error during turn: Reconnecting... 5/5 Some(ResponseStreamDisconnected { http_status_code: None }) Some("stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)")',
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    expect(report.overall).toBe("fail");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain(
+      "transient_transport_disconnect",
+    );
+    expect(report.runbook.map((item) => item.id)).toContain("transient_transport_disconnect");
+    expect(formatAgentQualityReport(report)).toContain(
+      "Provider/network stream disconnects interrupted ACP turns",
+    );
+  });
+
   it("warns on recoverable Telegram polling conflicts", async () => {
     const report = await runAgentQualityGate(
       { repoRoot: "/repo", sinceMinutes: 15 },

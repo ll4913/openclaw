@@ -19,6 +19,22 @@ describe("formatAcpRuntimeErrorText", () => {
     );
   });
 
+  it("summarizes transient provider stream disconnects without dumping backend URLs", () => {
+    const text = formatAcpRuntimeErrorText(
+      new AcpRuntimeError(
+        "ACP_TURN_FAILED",
+        `Handled error during turn: Reconnecting... 5/5 Some(ResponseStreamDisconnected { http_status_code: None }) Some("stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)")`,
+      ),
+    );
+
+    expect(text).toContain(
+      "ACP turn was interrupted by a transient network/provider stream disconnect.",
+    );
+    expect(text).toContain("I did not drop this message");
+    expect(text).toContain("next: Retry shortly.");
+    expect(text).not.toContain("https://chatgpt.com/backend-api/codex/responses");
+  });
+
   it("surfaces redacted numeric RequestError details in runtime failure text", () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const requestError = Object.assign(new Error("Internal error"), {
