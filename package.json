@@ -86,6 +86,7 @@
     "!docs/**/*.jpg",
     "!docs/**/*.png",
     "scripts/crabbox-wrapper.mjs",
+    "scripts/agent-quality-gate.mjs",
     "patches/",
     "skills/",
     "scripts/npm-runner.mjs",
