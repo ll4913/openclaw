@@ -40,6 +40,14 @@ export type AgentQualityRunbookSuggestion = {
   steps: string[];
 };
 
+export type ArtifactIntegrityState = "missing_now" | "stale_reference" | "historical";
+
+export type ArtifactIntegrityFinding = {
+  filePath: string;
+  state: ArtifactIntegrityState;
+  evidence: string[];
+};
+
 export type AgentQualityReport = {
   generatedAt: string;
   overall: AgentQualityStatus;
@@ -278,6 +286,7 @@ function classifyLikelyCauses(checks: AgentQualityCheck[]): AgentQualityCause[] 
       "warn",
       "A required runtime artifact is missing; rebuild before trusting gateway startup.",
       findEvidence(lines, [
+        /(?:missing_now|stale_reference): .*\/dist\//u,
         /dist\/telegram-ingress-worker\.runtime\.js missing/u,
         /Cannot find module .*\/dist\//u,
         /dist\/plugin-sdk\//u,
@@ -683,9 +692,12 @@ function tailLines(text: string, limit: number): string[] {
 
 function extractLogMessage(line: string): string {
   try {
-    const parsed = JSON.parse(line) as { message?: unknown; time?: unknown };
+    const parsed = JSON.parse(line) as { message?: unknown; msg?: unknown; time?: unknown };
     if (typeof parsed.message === "string") {
       return typeof parsed.time === "string" ? `${parsed.time} ${parsed.message}` : parsed.message;
+    }
+    if (typeof parsed.msg === "string") {
+      return typeof parsed.time === "string" ? `${parsed.time} ${parsed.msg}` : parsed.msg;
     }
   } catch {
     // Non-JSON logs are already human-readable enough for the gate.
@@ -710,26 +722,54 @@ function uniqueLogDetails(lines: string[], limit: number): string[] {
   return details;
 }
 
+function extractMissingDistModulePath(message: string): string | null {
+  const match = /Cannot find module ['"]([^'"]*\/dist\/[^'"]+)['"]/u.exec(message);
+  return match?.[1] ?? null;
+}
+
+function addArtifactReference(
+  references: Map<string, string[]>,
+  filePath: string | null,
+  message: string,
+): void {
+  if (!filePath) {
+    return;
+  }
+  const evidence = references.get(filePath) ?? [];
+  evidence.push(message);
+  references.set(filePath, evidence);
+}
+
 function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }): {
   failures: string[];
   warnings: string[];
+  artifactReferences: Map<string, string[]>;
+  historicalArtifactReferences: Map<string, string[]>;
   scanned: number;
 } {
   const cutoff = params.nowMs - params.sinceMs;
   const failures: string[] = [];
   const warnings: string[] = [];
+  const artifactReferences = new Map<string, string[]>();
+  const historicalArtifactReferences = new Map<string, string[]>();
   let scanned = 0;
 
   for (const line of tailLines(params.text, LOG_SCAN_MAX_LINES)) {
     const timestamp = parseLogTimestamp(line);
-    if (timestamp !== null && timestamp < cutoff) {
-      continue;
-    }
     const message = extractLogMessage(line);
     if (message.includes("Agent Quality Gate:")) {
       continue;
     }
+    if (timestamp !== null && timestamp < cutoff) {
+      addArtifactReference(
+        historicalArtifactReferences,
+        extractMissingDistModulePath(message),
+        message,
+      );
+      continue;
+    }
     scanned += 1;
+    addArtifactReference(artifactReferences, extractMissingDistModulePath(message), message);
     if (/\bchannel exited:/u.test(message)) {
       failures.push(message);
       continue;
@@ -762,7 +802,103 @@ function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }
   return {
     failures,
     warnings,
+    artifactReferences,
+    historicalArtifactReferences,
     scanned,
+  };
+}
+
+async function classifyArtifactIntegrity(params: {
+  deps: AgentQualityDeps;
+  artifactReferences: Map<string, string[]>;
+  historicalArtifactReferences: Map<string, string[]>;
+}): Promise<ArtifactIntegrityFinding[]> {
+  const pathExists =
+    params.deps.pathExists ??
+    (async (filePath: string) => {
+      try {
+        await stat(filePath);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  const findings: ArtifactIntegrityFinding[] = [];
+  for (const [filePath, evidence] of params.artifactReferences) {
+    findings.push({
+      filePath,
+      state: (await pathExists(filePath)) ? "stale_reference" : "missing_now",
+      evidence: uniqueLogDetails(evidence, 3),
+    });
+  }
+  for (const [filePath, evidence] of params.historicalArtifactReferences) {
+    if (params.artifactReferences.has(filePath)) {
+      continue;
+    }
+    findings.push({
+      filePath,
+      state: "historical",
+      evidence: uniqueLogDetails(evidence, 3),
+    });
+  }
+  return findings.toSorted((left, right) => {
+    const leftRank = left.state === "missing_now" ? 0 : left.state === "stale_reference" ? 1 : 2;
+    const rightRank = right.state === "missing_now" ? 0 : right.state === "stale_reference" ? 1 : 2;
+    return leftRank - rightRank || left.filePath.localeCompare(right.filePath);
+  });
+}
+
+function formatArtifactFinding(finding: ArtifactIntegrityFinding): string {
+  return `${finding.state}: ${finding.filePath}`;
+}
+
+function artifactFailureSet(findings: ArtifactIntegrityFinding[]): Set<string> {
+  return new Set(
+    findings
+      .filter((finding) => finding.state === "stale_reference")
+      .flatMap((finding) => finding.evidence),
+  );
+}
+
+function buildArtifactIntegrityCheck(
+  findings: ArtifactIntegrityFinding[],
+  sinceMinutes: number,
+): AgentQualityCheck {
+  const missingNow = findings.filter((finding) => finding.state === "missing_now");
+  const staleReferences = findings.filter((finding) => finding.state === "stale_reference");
+  if (missingNow.length > 0) {
+    return {
+      id: "artifact-integrity",
+      name: "Artifact Integrity",
+      status: "fail",
+      summary: `${missingNow.length} runtime artifact reference(s) still missing.`,
+      details: findings.slice(0, 8).map(formatArtifactFinding),
+    };
+  }
+  if (staleReferences.length > 0) {
+    return {
+      id: "artifact-integrity",
+      name: "Artifact Integrity",
+      status: "warn",
+      summary: `${staleReferences.length} missing artifact reference(s) are resolved but recent.`,
+      details: findings.slice(0, 8).map(formatArtifactFinding),
+    };
+  }
+  const historical = findings.filter((finding) => finding.state === "historical");
+  if (historical.length > 0) {
+    return {
+      id: "artifact-integrity",
+      name: "Artifact Integrity",
+      status: "pass",
+      summary: `${historical.length} historical missing artifact reference(s) ignored outside the active window.`,
+      details: historical.slice(0, 8).map(formatArtifactFinding),
+    };
+  }
+  return {
+    id: "artifact-integrity",
+    name: "Artifact Integrity",
+    status: "pass",
+    summary: `No missing dist artifact references in the last ${sinceMinutes} minute(s).`,
   };
 }
 
@@ -770,7 +906,11 @@ async function analyzeLogs(params: {
   deps: AgentQualityDeps;
   sinceMinutes: number;
   now: Date;
-}): Promise<{ check: AgentQualityCheck; logFile: string | null }> {
+}): Promise<{
+  check: AgentQualityCheck;
+  artifactCheck: AgentQualityCheck;
+  logFile: string | null;
+}> {
   const findLatestLogFile = params.deps.findLatestLogFile ?? defaultFindLatestLogFile;
   const logFile = await findLatestLogFile();
   if (!logFile) {
@@ -779,6 +919,12 @@ async function analyzeLogs(params: {
       check: {
         id: "gateway-log",
         name: "Gateway Log Sentinel",
+        status: "warn",
+        summary: "No OpenClaw gateway log file found.",
+      },
+      artifactCheck: {
+        id: "artifact-integrity",
+        name: "Artifact Integrity",
         status: "warn",
         summary: "No OpenClaw gateway log file found.",
       },
@@ -793,32 +939,45 @@ async function analyzeLogs(params: {
     sinceMs: params.sinceMinutes * 60_000,
     nowMs: params.now.getTime(),
   });
-  if (scan.failures.length > 0) {
+  const artifactFindings = await classifyArtifactIntegrity({
+    deps: params.deps,
+    artifactReferences: scan.artifactReferences,
+    historicalArtifactReferences: scan.historicalArtifactReferences,
+  });
+  const staleArtifactFailures = artifactFailureSet(artifactFindings);
+  const activeFailures = scan.failures.filter((failure) => !staleArtifactFailures.has(failure));
+  const staleWarnings = scan.failures.filter((failure) => staleArtifactFailures.has(failure));
+  const warnings = [...scan.warnings, ...staleWarnings];
+  const artifactCheck = buildArtifactIntegrityCheck(artifactFindings, params.sinceMinutes);
+  if (activeFailures.length > 0) {
     return {
       logFile,
+      artifactCheck,
       check: {
         id: "gateway-log",
         name: "Gateway Log Sentinel",
         status: "fail",
-        summary: `${scan.failures.length} recent fatal gateway/channel log event(s).`,
-        details: uniqueLogDetails(scan.failures, 8),
+        summary: `${activeFailures.length} recent active fatal gateway/channel log event(s).`,
+        details: uniqueLogDetails(activeFailures, 8),
       },
     };
   }
-  if (scan.warnings.length > 0) {
+  if (warnings.length > 0) {
     return {
       logFile,
+      artifactCheck,
       check: {
         id: "gateway-log",
         name: "Gateway Log Sentinel",
         status: "warn",
-        summary: `${scan.warnings.length} recent recoverable/degraded log event(s).`,
-        details: uniqueLogDetails(scan.warnings, 8),
+        summary: `${warnings.length} recent recoverable/resolved log event(s).`,
+        details: uniqueLogDetails(warnings, 8),
       },
     };
   }
   return {
     logFile,
+    artifactCheck,
     check: {
       id: "gateway-log",
       name: "Gateway Log Sentinel",
@@ -1033,6 +1192,7 @@ export async function runAgentQualityGate(
     const logResult = await analyzeLogs({ deps, sinceMinutes, now });
     logFile = logResult.logFile;
     checks.push(logResult.check);
+    checks.push(logResult.artifactCheck);
   }
   checks.push(
     await runChecked(
