@@ -40,7 +40,7 @@ export function registerAgentQualityCli(program: Command) {
     .description("Run gateway, runtime, Telegram, log, and regression coverage checks")
     .option("--json", "Output JSON", false)
     .option("--since-minutes <minutes>", "Gateway log scan window", "15")
-    .option("--timeout <ms>", "Gateway command timeout in ms", "10000")
+    .option("--timeout <ms>", "Per-probe timeout in ms", "3000")
     .option("--no-logs", "Skip gateway log scanning")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -49,7 +49,7 @@ export function registerAgentQualityCli(program: Command) {
             json: Boolean(opts.json),
             logs: opts.logs !== false,
             sinceMinutes: parsePositiveInteger(opts.sinceMinutes, 15),
-            timeoutMs: parsePositiveInteger(opts.timeout, 10_000),
+            timeoutMs: parsePositiveInteger(opts.timeout, 3_000),
           },
           defaultRuntime,
         );

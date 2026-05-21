@@ -10,7 +10,14 @@ const NOW = new Date("2026-05-21T08:00:00.000Z");
 function healthyDeps(overrides: Partial<AgentQualityDeps> = {}): AgentQualityDeps {
   return {
     now: () => NOW,
-    getGatewayStatus: async () => ({ ok: true, warnings: [] }),
+    getGatewayStatus: async () => ({
+      ok: true,
+      warnings: [],
+      service: { runtime: { status: "running", pid: 1234 } },
+      rpc: { ok: true },
+      health: { healthy: true },
+      port: { listeners: [{ pid: 1234, command: "node" }] },
+    }),
     getHealth: async () => ({ eventLoop: { degraded: false, reasons: [] } }),
     getChannelsStatus: async () => ({
       channelAccounts: {
@@ -27,11 +34,15 @@ function healthyDeps(overrides: Partial<AgentQualityDeps> = {}): AgentQualityDep
     }),
     findLatestLogFile: async () => "/tmp/openclaw/openclaw-2026-05-21.log",
     readTextFile: async () =>
-      JSON.stringify({
-        time: "2026-05-21T07:59:00.000Z",
-        level: "info",
-        msg: "gateway heartbeat",
-      }),
+      [
+        "GEMINI_API_KEY=test-gemini",
+        "XAI_API_KEY=test-xai",
+        JSON.stringify({
+          time: "2026-05-21T07:59:00.000Z",
+          level: "info",
+          msg: "gateway heartbeat",
+        }),
+      ].join("\n"),
     pathExists: async () => true,
     ...overrides,
   };
@@ -42,12 +53,14 @@ describe("agent quality gate", () => {
     const report = await runAgentQualityGate({ repoRoot: "/repo" }, healthyDeps());
 
     expect(report.overall).toBe("pass");
-    expect(report.summary).toEqual({ pass: 5, warn: 0, fail: 0 });
+    expect(report.summary).toEqual({ pass: 7, warn: 0, fail: 0 });
     expect(report.checks.map((check) => check.id)).toEqual([
-      "gateway",
+      "gateway-liveness",
+      "gateway-readiness",
       "health",
       "telegram-channels",
       "gateway-log",
+      "environment-doctor",
       "regression-coverage",
     ]);
   });
@@ -88,6 +101,9 @@ describe("agent quality gate", () => {
       { repoRoot: "/repo", logs: false },
       healthyDeps({
         getGatewayStatus: async () => ({
+          service: { runtime: { status: "running", pid: 1234 } },
+          health: { healthy: true },
+          port: { listeners: [{ pid: 1234, command: "node" }] },
           rpc: { ok: false, error: "connect EPERM 127.0.0.1:18789" },
         }),
         getHealth: async () => ({
@@ -102,7 +118,8 @@ describe("agent quality gate", () => {
     );
 
     expect(report.overall).toBe("fail");
-    expect(report.checks.find((entry) => entry.id === "gateway")?.summary).toBe(
+    expect(report.checks.find((entry) => entry.id === "gateway-liveness")?.status).toBe("pass");
+    expect(report.checks.find((entry) => entry.id === "gateway-readiness")?.summary).toBe(
       "connect EPERM 127.0.0.1:18789",
     );
     expect(report.checks.find((entry) => entry.id === "health")?.summary).toBe(
@@ -110,6 +127,26 @@ describe("agent quality gate", () => {
     );
     expect(report.checks.find((entry) => entry.id === "telegram-channels")?.summary).toBe(
       "gateway closed",
+    );
+  });
+
+  it("fails gateway probes quickly when a command exceeds the probe budget", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", logs: false, timeoutMs: 5 },
+      healthyDeps({
+        getGatewayStatus: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return { ok: true };
+        },
+      }),
+    );
+
+    expect(report.overall).toBe("fail");
+    expect(report.checks.find((entry) => entry.id === "gateway-liveness")?.summary).toBe(
+      "Gateway status probe timed out after 5ms",
+    );
+    expect(report.checks.find((entry) => entry.id === "gateway-readiness")?.summary).toBe(
+      "Gateway status probe timed out after 5ms",
     );
   });
 
@@ -174,5 +211,25 @@ describe("agent quality gate", () => {
     expect(report.overall).toBe("warn");
     expect(check?.status).toBe("warn");
     expect(check?.details).toEqual(["src/auto-reply/reply/dispatch-acp.test.ts"]);
+  });
+
+  it("warns on missing provider key sources or runtime artifacts without exposing secrets", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", logs: false },
+      healthyDeps({
+        readTextFile: async () => "",
+        pathExists: async (filePath) => !filePath.endsWith("telegram-ingress-worker.runtime.js"),
+      }),
+    );
+
+    const check = report.checks.find((entry) => entry.id === "environment-doctor");
+    expect(report.overall).toBe("warn");
+    expect(check?.status).toBe("warn");
+    expect(check?.details).toContain("Gemini key source missing (GEMINI_API_KEY/GOOGLE_API_KEY)");
+    expect(check?.details).toContain(
+      "xAI/Grok key source missing (XAI_API_KEY/GROK_API_KEY/X_AI_API_KEY)",
+    );
+    expect(check?.details).toContain("dist/telegram-ingress-worker.runtime.js missing");
+    expect(JSON.stringify(check)).not.toContain("test-gemini");
   });
 });

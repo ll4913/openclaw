@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -55,10 +56,14 @@ type CaptureRuntime = OutputRuntimeEnv & {
 };
 
 const DEFAULT_SINCE_MINUTES = 15;
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 3_000;
 const DEFAULT_LOG_DIR = "/tmp/openclaw";
 const LOG_SCAN_MAX_LINES = 5000;
 const CURRENT_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ENV_FILES = [
+  path.join(homedir(), ".openclaw/service-env/ai.openclaw.gateway.env"),
+  path.join(homedir(), ".openclaw/.env"),
+];
 
 class CaptureExitError extends Error {
   constructor(readonly code: number) {
@@ -187,6 +192,10 @@ function asRecordArray(value: unknown): Array<Record<string, unknown>> {
     : [];
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return Boolean(value && typeof (value as { then?: unknown }).then === "function");
+}
+
 function statusRank(status: AgentQualityStatus): number {
   return status === "fail" ? 2 : status === "warn" ? 1 : 0;
 }
@@ -214,16 +223,51 @@ function parseSinceMinutes(value: AgentQualityOptions["sinceMinutes"]): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SINCE_MINUTES;
 }
 
-function analyzeGatewayStatus(payload: unknown): AgentQualityCheck {
-  const record = asRecord(payload);
-  if (!record) {
+async function runWithTimeout<T>(params: {
+  name: string;
+  timeoutMs: number;
+  run: () => Promise<T>;
+}): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      params.run(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`${params.name} timed out after ${params.timeoutMs}ms`));
+        }, params.timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function runChecked(
+  id: string,
+  name: string,
+  run: () => Promise<AgentQualityCheck>,
+  timeoutMs?: number,
+): Promise<AgentQualityCheck> {
+  try {
+    return await (timeoutMs ? runWithTimeout({ name, timeoutMs, run }) : run());
+  } catch (err) {
     return {
-      id: "gateway",
-      name: "Gateway",
+      id,
+      name,
       status: "fail",
-      summary: "Gateway status did not return a structured payload.",
+      summary: formatErrorMessage(err),
     };
   }
+}
+
+function getGatewayWarnings(record: Record<string, unknown>): {
+  warnings: unknown[];
+  warningDetails: string[];
+  unreachableGatewayWarning: unknown;
+} {
   const warnings = Array.isArray(record.warnings) ? record.warnings : [];
   const warningDetails = warnings
     .map((warning) => {
@@ -237,11 +281,25 @@ function analyzeGatewayStatus(payload: unknown): AgentQualityCheck {
     const warningRecord = asRecord(warning);
     return warningRecord?.code === "no_gateway_reachable";
   });
+  return { warnings, warningDetails, unreachableGatewayWarning };
+}
+
+function analyzeGatewayLiveness(payload: unknown): AgentQualityCheck {
+  const record = asRecord(payload);
+  if (!record) {
+    return {
+      id: "gateway-liveness",
+      name: "Gateway Liveness",
+      status: "fail",
+      summary: "Gateway status did not return a structured payload.",
+    };
+  }
+  const { warningDetails, unreachableGatewayWarning } = getGatewayWarnings(record);
   if (unreachableGatewayWarning) {
     const warningRecord = asRecord(unreachableGatewayWarning);
     return {
-      id: "gateway",
-      name: "Gateway",
+      id: "gateway-liveness",
+      name: "Gateway Liveness",
       status: "fail",
       summary:
         typeof warningRecord?.message === "string"
@@ -250,23 +308,70 @@ function analyzeGatewayStatus(payload: unknown): AgentQualityCheck {
       details: warningDetails,
     };
   }
+  const service = asRecord(record.service);
+  const runtime = asRecord(service?.runtime);
+  const port = asRecord(record.port);
+  const listeners = asRecordArray(port?.listeners);
+  const health = asRecord(record.health);
+  const pid = typeof runtime?.pid === "number" ? ` pid=${runtime.pid}` : "";
+  if (runtime?.status === "running" || listeners.length > 0 || health?.healthy === true) {
+    return {
+      id: "gateway-liveness",
+      name: "Gateway Liveness",
+      status: "pass",
+      summary: `Gateway process/listener is alive${pid}.`,
+    };
+  }
+  return {
+    id: "gateway-liveness",
+    name: "Gateway Liveness",
+    status: "fail",
+    summary: "Gateway process/listener is not confirmed alive.",
+    details: warningDetails,
+  };
+}
+
+function analyzeGatewayReadiness(payload: unknown): AgentQualityCheck {
+  const record = asRecord(payload);
+  if (!record) {
+    return {
+      id: "gateway-readiness",
+      name: "Gateway RPC Readiness",
+      status: "fail",
+      summary: "Gateway status did not return a structured payload.",
+    };
+  }
+  const { warnings, warningDetails, unreachableGatewayWarning } = getGatewayWarnings(record);
+  if (unreachableGatewayWarning) {
+    const warningRecord = asRecord(unreachableGatewayWarning);
+    return {
+      id: "gateway-readiness",
+      name: "Gateway RPC Readiness",
+      status: "fail",
+      summary:
+        typeof warningRecord?.message === "string"
+          ? (warningRecord.message.split(".")[0] ?? warningRecord.message)
+          : "No gateway answered the RPC readiness probe.",
+      details: warningDetails,
+    };
+  }
   const rpc = asRecord(record.rpc);
   if (rpc?.ok === false) {
     return {
-      id: "gateway",
-      name: "Gateway",
+      id: "gateway-readiness",
+      name: "Gateway RPC Readiness",
       status: "fail",
       summary: typeof rpc.error === "string" ? rpc.error : "Gateway RPC probe failed.",
     };
   }
   return {
-    id: "gateway",
-    name: "Gateway",
+    id: "gateway-readiness",
+    name: "Gateway RPC Readiness",
     status: warnings.length > 0 ? "warn" : "pass",
     summary:
       warnings.length > 0
-        ? `Gateway reachable with ${warnings.length} warning(s).`
-        : "Gateway status command completed.",
+        ? `Gateway RPC reachable with ${warnings.length} warning(s).`
+        : "Gateway RPC probe completed.",
     details: warningDetails,
   };
 }
@@ -441,21 +546,25 @@ function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }
     if (timestamp !== null && timestamp < cutoff) {
       continue;
     }
+    const message = extractLogMessage(line);
+    if (message.includes("Agent Quality Gate:")) {
+      continue;
+    }
     scanned += 1;
-    if (/\bchannel exited:/u.test(line)) {
-      failures.push(extractLogMessage(line));
+    if (/\bchannel exited:/u.test(message)) {
+      failures.push(message);
       continue;
     }
-    if (/\bACP_(?:SESSION_INIT_FAILED|TURN_FAILED)\b/u.test(line)) {
-      failures.push(extractLogMessage(line));
+    if (/\bACP_(?:SESSION_INIT_FAILED|TURN_FAILED)\b/u.test(message)) {
+      failures.push(message);
       continue;
     }
-    if (/isolated polling cycle error reason=getUpdates conflict/u.test(line)) {
-      warnings.push(extractLogMessage(line));
+    if (/isolated polling cycle error reason=getUpdates conflict/u.test(message)) {
+      warnings.push(message);
       continue;
     }
-    if (/memory pressure: level=warning/u.test(line)) {
-      warnings.push(extractLogMessage(line));
+    if (/memory pressure: level=warning/u.test(message)) {
+      warnings.push(message);
     }
   }
   return {
@@ -568,21 +677,93 @@ async function analyzeRegressionCoverage(params: {
   };
 }
 
-async function runChecked(
-  id: string,
-  name: string,
-  run: () => Promise<AgentQualityCheck>,
-): Promise<AgentQualityCheck> {
-  try {
-    return await run();
-  } catch (err) {
-    return {
-      id,
-      name,
-      status: "fail",
-      summary: formatErrorMessage(err),
-    };
+function parseEnvLine(line: string, name: string): string | null {
+  let trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) {
+    return null;
   }
+  if (trimmed.startsWith("export ")) {
+    trimmed = trimmed.slice("export ".length).trim();
+  }
+  if (!trimmed.startsWith(`${name}=`)) {
+    return null;
+  }
+  const value = trimmed
+    .split("=", 2)[1]
+    ?.trim()
+    .replace(/^['"]|['"]$/gu, "");
+  return value ? "<redacted>" : null;
+}
+
+async function hasEnvFileValue(
+  names: string[],
+  deps: AgentQualityDeps,
+): Promise<{ present: boolean; source?: string }> {
+  for (const name of names) {
+    if (process.env[name]) {
+      return { present: true, source: `process env:${name}` };
+    }
+  }
+  for (const envFile of ENV_FILES) {
+    let text = "";
+    try {
+      text = deps.readTextFile ? await deps.readTextFile(envFile) : await readFile(envFile, "utf8");
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (text.split(/\r?\n/u).some((line) => parseEnvLine(line, name))) {
+        return { present: true, source: `${envFile}:${name}` };
+      }
+    }
+  }
+  return { present: false };
+}
+
+async function analyzeEnvironmentDoctor(params: {
+  deps: AgentQualityDeps;
+  repoRoot: string;
+}): Promise<AgentQualityCheck> {
+  const checks = [
+    { label: "Gemini", names: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] },
+    { label: "xAI/Grok", names: ["XAI_API_KEY", "GROK_API_KEY", "X_AI_API_KEY"] },
+  ];
+  const missing: string[] = [];
+  const present: string[] = [];
+  for (const check of checks) {
+    const result = await hasEnvFileValue(check.names, params.deps);
+    if (result.present) {
+      present.push(`${check.label} source=${result.source}`);
+    } else {
+      missing.push(`${check.label} key source missing (${check.names.join("/")})`);
+    }
+  }
+  const telegramWorker = path.join(params.repoRoot, "dist/telegram-ingress-worker.runtime.js");
+  const pathExists =
+    params.deps.pathExists ??
+    (async (filePath: string) => {
+      try {
+        await stat(filePath);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  if (!(await pathExists(telegramWorker))) {
+    missing.push("dist/telegram-ingress-worker.runtime.js missing");
+  } else {
+    present.push("telegram ingress runtime artifact present");
+  }
+  return {
+    id: "environment-doctor",
+    name: "Environment Doctor",
+    status: missing.length > 0 ? "warn" : "pass",
+    summary:
+      missing.length > 0
+        ? `${missing.length} environment/artifact drift item(s) found.`
+        : "Provider key sources and runtime artifacts are present.",
+    details: missing.length > 0 ? [...missing, ...present].slice(0, 8) : present.slice(0, 4),
+  };
 }
 
 export async function runAgentQualityGate(
@@ -595,35 +776,80 @@ export async function runAgentQualityGate(
   const repoRoot = opts.repoRoot ?? resolveDefaultRepoRoot();
   const checks: AgentQualityCheck[] = [];
 
-  checks.push(
-    await runChecked("gateway", "Gateway", async () =>
-      analyzeGatewayStatus(
-        deps.getGatewayStatus
-          ? await deps.getGatewayStatus()
-          : await defaultGetGatewayStatus(timeoutMs),
-      ),
-    ),
-  );
-  checks.push(
-    await runChecked("health", "Runtime Health", async () =>
+  const gatewayStatusPromise = runWithTimeout({
+    name: "Gateway status probe",
+    timeoutMs,
+    run: () =>
+      deps.getGatewayStatus ? deps.getGatewayStatus() : defaultGetGatewayStatus(timeoutMs),
+  }).catch((err) => err);
+  const healthCheckPromise = runChecked(
+    "health",
+    "Runtime Health",
+    async () =>
       analyzeHealth(deps.getHealth ? await deps.getHealth() : await defaultGetHealth(timeoutMs)),
-    ),
+    timeoutMs,
   );
-  checks.push(
-    await runChecked("telegram-channels", "Telegram Channels", async () =>
+  const channelsCheckPromise = runChecked(
+    "telegram-channels",
+    "Telegram Delivery Readiness",
+    async () =>
       analyzeChannels(
         deps.getChannelsStatus
           ? await deps.getChannelsStatus()
           : await defaultGetChannelsStatus(timeoutMs),
       ),
-    ),
+    timeoutMs,
   );
+
+  const [gatewayStatus, healthCheck, channelsCheck] = await Promise.all([
+    gatewayStatusPromise,
+    healthCheckPromise,
+    channelsCheckPromise,
+  ]);
+
+  if (gatewayStatus instanceof Error) {
+    checks.push(
+      {
+        id: "gateway-liveness",
+        name: "Gateway Liveness",
+        status: "fail",
+        summary: gatewayStatus.message,
+      },
+      {
+        id: "gateway-readiness",
+        name: "Gateway RPC Readiness",
+        status: "fail",
+        summary: gatewayStatus.message,
+      },
+    );
+  } else {
+    checks.push(
+      asRecord(gatewayStatus) || !isPromiseLike(gatewayStatus)
+        ? analyzeGatewayLiveness(gatewayStatus)
+        : {
+            id: "gateway-liveness",
+            name: "Gateway Liveness",
+            status: "fail",
+            summary: "Gateway status probe did not complete.",
+          },
+    );
+    checks.push(analyzeGatewayReadiness(gatewayStatus));
+  }
+  checks.push(healthCheck, { ...channelsCheck, name: "Telegram Delivery Readiness" });
   let logFile: string | null = null;
   if (opts.logs !== false) {
     const logResult = await analyzeLogs({ deps, sinceMinutes, now });
     logFile = logResult.logFile;
     checks.push(logResult.check);
   }
+  checks.push(
+    await runChecked(
+      "environment-doctor",
+      "Environment Doctor",
+      async () => analyzeEnvironmentDoctor({ deps, repoRoot }),
+      timeoutMs,
+    ),
+  );
   checks.push(await analyzeRegressionCoverage({ deps, repoRoot }));
 
   return {
