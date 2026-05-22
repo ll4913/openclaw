@@ -34,6 +34,15 @@ export type AcpRuntimeConfig = {
   installCommand?: string;
 };
 
+export type AcpFailoverConfig = {
+  /** Enables automatic worker failover when a bound ACP turn fails. */
+  enabled?: boolean;
+  /** Default ordered ACP agent ids to try when no agent-specific chain is configured. */
+  defaultChain?: string[];
+  /** Ordered ACP agent ids to try per failing primary agent id. */
+  agents?: Record<string, string[]>;
+};
+
 export type AcpConfig = {
   /** Global ACP runtime gate. */
   enabled?: boolean;
@@ -45,6 +54,7 @@ export type AcpConfig = {
   defaultAgent?: string;
   allowedAgents?: string[];
   maxConcurrentSessions?: number;
+  failover?: AcpFailoverConfig;
   stream?: AcpStreamConfig;
   runtime?: AcpRuntimeConfig;
 };

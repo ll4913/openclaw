@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 import { OpenClawSchema } from "./zod-schema.js";
 
 describe("ACP binding cutover schema", () => {
+  it("accepts ACP failover chains for bound worker handoff", () => {
+    const parsed = OpenClawSchema.safeParse({
+      acp: {
+        enabled: true,
+        failover: {
+          enabled: true,
+          defaultChain: ["cursor"],
+          agents: {
+            claude: ["cursor"],
+            codex: ["cursor"],
+          },
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
   it("accepts top-level typed ACP bindings with per-agent runtime defaults", () => {
     const parsed = OpenClawSchema.safeParse({
       agents: {
