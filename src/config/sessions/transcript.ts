@@ -60,6 +60,43 @@ async function ensureSessionHeader(params: {
   });
 }
 
+const RAW_VISIBLE_DELIVERY_ERROR_PATTERNS = [
+  /"error"\s*:\s*"(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)"/iu,
+  /\b(?:connect|request|fetch)\s+(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)\b/iu,
+  /\b(?:couldn['’]?t connect to server|failed to connect|connection refused)\b/iu,
+  /\bSSL routines\b/iu,
+  /\btls_get_more_records\b/iu,
+  /\bbad record mac\b/iu,
+  /\berror:.*\bopenssl\b/iu,
+  /\bopenssl\b.*\berror:/iu,
+] as const;
+
+const PAGE_VALIDATION_DELIVERY_CONTEXT_PATTERNS = [
+  /\bFY TARGET\b/iu,
+  /\bYTD BUDGET\b/iu,
+  /\bpage\b/iu,
+  /页面/iu,
+  /验证/iu,
+  /https?:\/\//iu,
+] as const;
+
+function includesAnyPattern(input: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(input));
+}
+
+function sanitizeVisibleDeliveryMirrorText(input: string): string {
+  if (!includesAnyPattern(input, RAW_VISIBLE_DELIVERY_ERROR_PATTERNS)) {
+    return input;
+  }
+  if (includesAnyPattern(input, PAGE_VALIDATION_DELIVERY_CONTEXT_PATTERNS)) {
+    return "Page validation failed: could not connect to the target address, so the target content could not be confirmed.";
+  }
+  if (/\bSSL routines\b|\btls_get_more_records\b|\bbad record mac\b|\bopenssl\b/iu.test(input)) {
+    return "Validation failed: a network or secure connection error prevented the check.";
+  }
+  return "Validation failed: could not connect to the target address.";
+}
+
 export type SessionTranscriptAppendResult =
   | { ok: true; sessionFile: string; messageId: string }
   | { ok: false; reason: string };
@@ -239,6 +276,7 @@ export async function appendAssistantMessageToSessionTranscript(params: {
   if (!mirrorText) {
     return { ok: false, reason: "empty text" };
   }
+  const visibleMirrorText = sanitizeVisibleDeliveryMirrorText(mirrorText);
 
   return appendExactAssistantMessageToSessionTranscript({
     agentId: params.agentId,
@@ -249,7 +287,7 @@ export async function appendAssistantMessageToSessionTranscript(params: {
     config: params.config,
     message: {
       role: "assistant" as const,
-      content: [{ type: "text", text: mirrorText }],
+      content: [{ type: "text", text: visibleMirrorText }],
       api: "openai-responses",
       provider: "openclaw",
       model: "delivery-mirror",
