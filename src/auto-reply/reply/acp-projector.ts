@@ -31,6 +31,7 @@ const MEDIA_REFERENCE_PATTERN = /\bMEDIA:\s*\S+/iu;
 const RAW_VISIBLE_ERROR_PATTERNS = [
   /"error"\s*:\s*"(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)"/iu,
   /\b(?:connect|request|fetch)\s+(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)\b/iu,
+  /\b(?:couldn['’]?t connect to server|failed to connect|connection refused)\b/iu,
   /\bSSL routines\b/iu,
   /\btls_get_more_records\b/iu,
   /\bbad record mac\b/iu,
@@ -100,7 +101,7 @@ function looksLikePageValidationContext(input: string): boolean {
   );
 }
 
-function sanitizeVisibleAssistantText(input: string): string {
+export function sanitizeVisibleAcpAssistantText(input: string): string {
   if (!looksLikeRawVisibleError(input)) {
     return input;
   }
@@ -126,12 +127,12 @@ function sanitizeVisibleAssistantTextWithPending(params: {
 }): { text: string; replacePending: boolean } {
   if (!params.pendingText) {
     return {
-      text: sanitizeVisibleAssistantText(params.nextText),
+      text: sanitizeVisibleAcpAssistantText(params.nextText),
       replacePending: false,
     };
   }
   const combined = `${params.pendingText}${params.nextText}`;
-  const sanitized = sanitizeVisibleAssistantText(combined);
+  const sanitized = sanitizeVisibleAcpAssistantText(combined);
   if (sanitized !== combined) {
     return {
       text: sanitized,
@@ -139,7 +140,7 @@ function sanitizeVisibleAssistantTextWithPending(params: {
     };
   }
   return {
-    text: sanitizeVisibleAssistantText(params.nextText),
+    text: sanitizeVisibleAcpAssistantText(params.nextText),
     replacePending: false,
   };
 }
