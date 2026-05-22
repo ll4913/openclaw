@@ -353,6 +353,57 @@ describe("createAcpReplyProjector", () => {
     expect(deliveries[0]?.text).not.toMatch(/heredoc|const browser|page\.on|→/i);
   });
 
+  it("sanitizes raw connection JSON errors in assistant text into readable page validation failure", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      createLiveCfgOverrides({
+        coalesceIdleMs: 0,
+        maxChunkChars: 512,
+      }),
+    );
+
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text: [
+        "验证失败。\n\n",
+        "实际请求 http://127.0.0.1:9/not-found 时连接失败：\n\n",
+        '```json\n{\n  "error": "EPERM",\n  "message": "connect EPERM 127.0.0.1:9"\n}\n```\n',
+        "因此无法确认页面包含 FY TARGET 和 YTD BUDGET。",
+      ].join(""),
+    });
+    await projector.flush(true);
+
+    expect(combinedBlockText(deliveries)).toContain("Page validation failed");
+    expect(combinedBlockText(deliveries)).not.toMatch(
+      /EPERM|connect EPERM|```json|"error"|"message"/i,
+    );
+  });
+
+  it("sanitizes raw TLS/OpenSSL assistant text into readable validation failure in final-only delivery", async () => {
+    const { deliveries, projector } = createProjectorHarness({
+      acp: {
+        enabled: true,
+        stream: {
+          deliveryMode: "final_only",
+        },
+      },
+    });
+
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text: "Error: T: [internal] COD8F3EE01000000:error:0A000119:SSL routines:tls_get_more_records:decryption failed or bad record mac:../deps/openssl/openssl/ssl/record/methods/tls_common.c:870:",
+    });
+    await projector.flush(true);
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.kind).toBe("final");
+    expect(deliveries[0]?.text).toContain("Validation failed");
+    expect(deliveries[0]?.text).not.toMatch(
+      /SSL routines|tls_get_more_records|bad record mac|openssl/i,
+    );
+  });
+
   it("reports progress for ACP runtime events before delivery filtering", async () => {
     const onProgress = vi.fn();
     const { projector } = createProjectorHarness(undefined, { onProgress });
