@@ -1069,6 +1069,38 @@ describe("dispatchTelegramMessage draft streaming", () => {
     });
   });
 
+  it("sanitizes raw validation errors before mirroring preview-finalized finals", async () => {
+    setupDraftStreams({ answerMessageId: 2001 });
+    const context = createContext();
+    context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
+    loadSessionStore.mockReturnValue({
+      "agent:default:telegram:direct:123": { sessionId: "s1" },
+    });
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver(
+        {
+          text:
+            "失败。\n\n本次已用 Node 原生 HTTP 实际请求：\n\n" +
+            "`http://127.0.0.1:9/not-found`\n\n返回：\n\n" +
+            "`ECONNREFUSED connect ECONNREFUSED 127.0.0.1:9`\n\n" +
+            "因此页面未返回内容，不能验证是否包含 `FY TARGET` 和 `YTD BUDGET`。",
+        },
+        { kind: "final" },
+      );
+      return { queuedFinal: true };
+    });
+
+    await dispatchWithContext({ context });
+
+    const transcriptCall = expectRecordFields(mockCallArg(appendSessionTranscriptMessage), {
+      transcriptPath: "/tmp/session.jsonl",
+    });
+    const mirroredText = (transcriptCall.message as { content?: Array<{ text?: string }> })
+      .content?.[0]?.text;
+    expect(mirroredText).toContain("Page validation failed");
+    expect(mirroredText).not.toMatch(/ECONNREFUSED|Connection refused|Couldn't connect/i);
+  });
+
   it("mirrors the longer streamed preview when final text is truncated", async () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     const fullAnswer =
