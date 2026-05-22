@@ -120,6 +120,30 @@ function sanitizeVisibleAssistantText(input: string): string {
   return "⚠️ Tool execution failed. Check the verification log or retry.";
 }
 
+function sanitizeVisibleAssistantTextWithPending(params: {
+  pendingText: string;
+  nextText: string;
+}): { text: string; replacePending: boolean } {
+  if (!params.pendingText) {
+    return {
+      text: sanitizeVisibleAssistantText(params.nextText),
+      replacePending: false,
+    };
+  }
+  const combined = `${params.pendingText}${params.nextText}`;
+  const sanitized = sanitizeVisibleAssistantText(combined);
+  if (sanitized !== combined) {
+    return {
+      text: sanitized,
+      replacePending: true,
+    };
+  }
+  return {
+    text: sanitizeVisibleAssistantText(params.nextText),
+    replacePending: false,
+  };
+}
+
 function includesAny(input: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(input));
 }
@@ -680,7 +704,25 @@ export function createAcpReplyProjector(params: {
       if (!text) {
         return;
       }
-      text = sanitizeVisibleAssistantText(text);
+      if (settings.deliveryMode === "live") {
+        const sanitized = sanitizeVisibleAssistantTextWithPending({
+          pendingText: liveBufferText,
+          nextText: text,
+        });
+        text = sanitized.text;
+        if (sanitized.replacePending) {
+          liveBufferText = "";
+        }
+      } else {
+        const sanitized = sanitizeVisibleAssistantTextWithPending({
+          pendingText: finalOnlyOutputText,
+          nextText: text,
+        });
+        text = sanitized.text;
+        if (sanitized.replacePending) {
+          finalOnlyOutputText = "";
+        }
+      }
       if (
         pendingHiddenBoundary &&
         shouldInsertSeparator({

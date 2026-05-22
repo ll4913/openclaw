@@ -414,6 +414,52 @@ describe("createAcpReplyProjector", () => {
     );
   });
 
+  it("sanitizes plain assistant connection errors into readable page validation failure", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      createLiveCfgOverrides({
+        coalesceIdleMs: 0,
+        maxChunkChars: 512,
+      }),
+    );
+
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text:
+        "验证失败。\n\n我用 Node 原生 HTTP 实际请求了 `http://127.0.0.1:9/not-found`，结果是：\n\n" +
+        "`ECONNREFUSED: connect ECONNREFUSED 127.0.0.1:9`\n\n" +
+        "页面没有成功返回内容，所以无法确认其中是否包含 `FY TARGET` 和 `YTD BUDGET`。",
+    });
+    await projector.flush(true);
+
+    expect(combinedBlockText(deliveries)).toContain("Page validation failed");
+    expect(combinedBlockText(deliveries)).not.toMatch(/ECONNREFUSED|connect ECONNREFUSED/i);
+  });
+
+  it("sanitizes split assistant connection errors before live buffer delivery", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      createLiveCfgOverrides({
+        coalesceIdleMs: 0,
+        maxChunkChars: 512,
+      }),
+    );
+
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text: "验证失败。\n\n我用 Node 原生 HTTP 实际请求了 `http://127.0.0.1:9/not-found`，结果是：\n\n`ECONNREFUSED:",
+    });
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text: " connect ECONNREFUSED 127.0.0.1:9`\n\n页面没有成功返回内容，所以无法确认其中是否包含 `FY TARGET` 和 `YTD BUDGET`。",
+    });
+    await projector.flush(true);
+
+    expect(combinedBlockText(deliveries)).toContain("Page validation failed");
+    expect(combinedBlockText(deliveries)).not.toMatch(/ECONNREFUSED|connect ECONNREFUSED/i);
+  });
+
   it("sanitizes raw TLS/OpenSSL assistant text into readable validation failure in final-only delivery", async () => {
     const { deliveries, projector } = createProjectorHarness({
       acp: {
