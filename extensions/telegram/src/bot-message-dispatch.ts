@@ -3,6 +3,7 @@ import type { Bot } from "grammy";
 import {
   appendSessionTranscriptMessage,
   emitSessionTranscriptUpdate,
+  sanitizeVisibleDeliveryMirrorText,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   DEFAULT_TIMING,
@@ -250,6 +251,7 @@ async function mirrorTelegramAssistantReplyToTranscript(params: {
   if (!text) {
     return;
   }
+  const visibleText = sanitizeVisibleDeliveryMirrorText(text);
   const storePath = params.telegramDeps.resolveStorePath(params.cfg.session?.store, {
     agentId: params.route.agentId,
   });
@@ -274,7 +276,7 @@ async function mirrorTelegramAssistantReplyToTranscript(params: {
   });
   const message = {
     role: "assistant" as const,
-    content: [{ type: "text" as const, text }],
+    content: [{ type: "text" as const, text: visibleText }],
     api: "openai-responses",
     provider: "openclaw",
     model: "delivery-mirror",

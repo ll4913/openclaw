@@ -80,7 +80,7 @@ function includesAnyPattern(input: string, patterns: readonly RegExp[]): boolean
   return patterns.some((pattern) => pattern.test(input));
 }
 
-function sanitizeVisibleDeliveryMirrorText(input: string): string {
+export function sanitizeVisibleDeliveryMirrorText(input: string): string {
   if (!includesAnyPattern(input, RAW_VISIBLE_DELIVERY_ERROR_PATTERNS)) {
     return input;
   }
