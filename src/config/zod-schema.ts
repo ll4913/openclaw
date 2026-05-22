@@ -685,6 +685,14 @@ export const OpenClawSchema = z
         defaultAgent: z.string().optional(),
         allowedAgents: z.array(z.string()).optional(),
         maxConcurrentSessions: z.number().int().positive().optional(),
+        failover: z
+          .object({
+            enabled: z.boolean().optional(),
+            defaultChain: z.array(z.string()).optional(),
+            agents: z.record(z.string(), z.array(z.string())).optional(),
+          })
+          .strict()
+          .optional(),
         stream: z
           .object({
             coalesceIdleMs: z.number().int().nonnegative().optional(),

@@ -24,6 +24,7 @@ import { createAcpSessionMeta, createAcpTestConfig } from "./test-fixtures/acp-r
 
 const managerMocks = vi.hoisted(() => ({
   resolveSession: vi.fn(),
+  initializeSession: vi.fn(),
   runTurn: vi.fn(),
   getObservabilitySnapshot: vi.fn(() => ({
     turns: { queueDepth: 0 },
@@ -96,6 +97,10 @@ const transcriptMocks = vi.hoisted(() => ({
 }));
 
 const bindingServiceMocks = vi.hoisted(() => ({
+  bind: vi.fn<(input: unknown) => Promise<SessionBindingRecord>>(async (input) => {
+    const record = input as SessionBindingRecord;
+    return record;
+  }),
   listBySession: vi.fn<(sessionKey: string) => SessionBindingRecord[]>(() => []),
   unbind: vi.fn<(input: unknown) => Promise<SessionBindingRecord[]>>(async () => []),
 }));
@@ -103,6 +108,7 @@ const bindingServiceMocks = vi.hoisted(() => ({
 vi.mock("./dispatch-acp-manager.runtime.js", () => ({
   getAcpSessionManager: () => managerMocks,
   getSessionBindingService: () => ({
+    bind: (input: unknown) => bindingServiceMocks.bind(input),
     listBySession: (targetSessionKey: string) =>
       bindingServiceMocks.listBySession(targetSessionKey),
     unbind: (input: unknown) => bindingServiceMocks.unbind(input),
@@ -421,6 +427,21 @@ function expectRoutedPayload(callIndex: number, payload: Partial<MockTtsReply>) 
 describe("tryDispatchAcpReply", () => {
   beforeEach(() => {
     managerMocks.resolveSession.mockReset();
+    managerMocks.initializeSession.mockReset();
+    managerMocks.initializeSession.mockImplementation(
+      async ({
+        sessionKey: initializedSessionKey,
+        agent,
+      }: {
+        sessionKey: string;
+        agent: string;
+      }) => ({
+        meta: createAcpSessionMeta({
+          agent,
+          runtimeSessionName: `runtime:${initializedSessionKey}`,
+        }),
+      }),
+    );
     managerMocks.runTurn.mockReset();
     managerMocks.runTurn.mockImplementation(
       async ({ onEvent }: { onEvent?: (event: unknown) => Promise<void> }) => {
@@ -457,6 +478,21 @@ describe("tryDispatchAcpReply", () => {
     transcriptMocks.persistAcpDispatchTranscript.mockClear();
     bindingServiceMocks.listBySession.mockReset();
     bindingServiceMocks.listBySession.mockReturnValue([]);
+    bindingServiceMocks.bind.mockReset();
+    bindingServiceMocks.bind.mockImplementation(async (input: unknown) => {
+      const normalized = input as {
+        targetSessionKey: string;
+        conversation: SessionBindingRecord["conversation"];
+      };
+      return {
+        bindingId: `${normalized.conversation.channel}:${normalized.conversation.accountId}:${normalized.conversation.conversationId}`,
+        targetSessionKey: normalized.targetSessionKey,
+        targetKind: "session",
+        conversation: normalized.conversation,
+        status: "active",
+        boundAt: Date.now(),
+      };
+    });
     bindingServiceMocks.unbind.mockReset();
     bindingServiceMocks.unbind.mockResolvedValue([]);
     globalThis.fetch = originalFetch;
@@ -1491,6 +1527,107 @@ describe("tryDispatchAcpReply", () => {
     expect(reply.text).toContain("I did not drop this message");
     expect(reply.text).not.toContain("https://chatgpt.com/backend-api/codex/responses");
     expect(bindingServiceMocks.unbind).not.toHaveBeenCalled();
+  });
+
+  it("can fail over Codex ACP turn failures to Cursor and keep the bound conversation visible", async () => {
+    managerMocks.resolveSession.mockReturnValue({
+      kind: "ready",
+      sessionKey,
+      meta: createAcpSessionMeta({
+        agent: "codex",
+        cwd: "/Users/lianglin/Projects/mission-control",
+        runtimeOptions: {
+          cwd: "/Users/lianglin/Projects/mission-control",
+          model: "gpt-5.5",
+          thinking: "high",
+        },
+      }),
+    });
+    managerMocks.runTurn
+      .mockRejectedValueOnce(
+        new Error(
+          `Handled error during turn: Reconnecting... 5/5 Some(ResponseStreamDisconnected { http_status_code: None }) Some("stream disconnected before completion")`,
+        ),
+      )
+      .mockImplementationOnce(
+        async ({ onEvent }: { onEvent: (event: unknown) => Promise<void> }) => {
+          await onEvent({
+            type: "text_delta",
+            text: "Cursor handled the failed task.",
+            tag: "agent_message_chunk",
+          });
+          await onEvent({ type: "done" });
+        },
+      );
+    bindingServiceMocks.listBySession.mockReturnValue([
+      {
+        bindingId: "telegram:default:thread-1",
+        targetSessionKey: sessionKey,
+        targetKind: "session",
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "thread-1",
+        },
+        status: "active",
+        boundAt: 0,
+      },
+    ]);
+
+    const cfg = createAcpTestConfig({
+      acp: {
+        enabled: true,
+        failover: {
+          enabled: true,
+          agents: {
+            codex: ["cursor"],
+          },
+        },
+        stream: {
+          coalesceIdleMs: 0,
+          maxChunkChars: 64,
+        },
+      },
+    } as Partial<OpenClawConfig>);
+
+    await runDispatch({
+      bodyForAgent: "上海这周的天气哪天最适合在户外阳台上烧烤",
+      cfg,
+      shouldRouteToOriginating: true,
+    });
+
+    expect(managerMocks.initializeSession).toHaveBeenCalledTimes(1);
+    expect(managerMocks.initializeSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "cursor",
+        cwd: "/Users/lianglin/Projects/mission-control",
+        mode: "persistent",
+      }),
+    );
+    expect(managerMocks.runTurn).toHaveBeenCalledTimes(2);
+    expect(runTurnCall(0).sessionKey).toBe(sessionKey);
+    expect(runTurnCall(1).sessionKey).toMatch(/^agent:cursor:acp:/);
+    expect(runTurnCall(1).text).toContain("previous ACP worker");
+    expect(runTurnCall(1).text).toContain("上海这周的天气哪天最适合在户外阳台上烧烤");
+    expect(runTurnCall(1).text).toContain("stream disconnected before completion");
+    expect(bindingServiceMocks.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetSessionKey: runTurnCall(1).sessionKey,
+        conversation: expect.objectContaining({
+          channel: "telegram",
+          conversationId: "thread-1",
+        }),
+      }),
+    );
+    expect(
+      routeMocks.routeReply.mock.calls.some((call) => {
+        const payload = requireRecord(requireRecord(call[0], "route params").payload, "payload");
+        return (
+          typeof payload.text === "string" &&
+          payload.text.includes("Cursor handled the failed task.")
+        );
+      }),
+    ).toBe(true);
   });
 
   it("unbinds stale bindings on ACP runTurn missing-metadata failures", async () => {
