@@ -29,6 +29,25 @@ const HIDDEN_BOUNDARY_TAGS = new Set<AcpSessionUpdateTag>(["tool_call", "tool_ca
 const SUCCESS_CLAIM_PATTERN =
   /(已验证|验证通过|通过验证|成功|verified|passed|validation passed|confirmed)/iu;
 const MEDIA_REFERENCE_PATTERN = /\bMEDIA:\s*\S+/iu;
+const RAW_VISIBLE_ERROR_PATTERNS = [
+  /"error"\s*:\s*"(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)"/iu,
+  /\b(?:connect|request|fetch)\s+(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)\b/iu,
+  /\bSSL routines\b/iu,
+  /\btls_get_more_records\b/iu,
+  /\bbad record mac\b/iu,
+  /\berror:.*\bopenssl\b/iu,
+  /\bopenssl\b.*\berror:/iu,
+  /\[internal\].*\berror:/iu,
+] as const;
+
+const PAGE_VALIDATION_CONTEXT_PATTERNS = [
+  /\bFY TARGET\b/iu,
+  /\bYTD BUDGET\b/iu,
+  /\bpage\b/iu,
+  /页面/iu,
+  /验证/iu,
+  /https?:\/\//iu,
+] as const;
 
 export type AcpProjectedDeliveryMeta = {
   tag?: AcpSessionUpdateTag;
@@ -69,6 +88,37 @@ function normalizeToolStatus(status: string | undefined): string | undefined {
 
 function containsMediaReference(input: string): boolean {
   return MEDIA_REFERENCE_PATTERN.test(input);
+}
+
+function looksLikeRawVisibleError(input: string): boolean {
+  return includesAny(input, RAW_VISIBLE_ERROR_PATTERNS);
+}
+
+function looksLikePageValidationContext(input: string): boolean {
+  return (
+    countMatches(input, /(?:FY TARGET|YTD BUDGET|页面|验证|page|https?:\/\/)/giu) >= 2 ||
+    includesAny(input, PAGE_VALIDATION_CONTEXT_PATTERNS)
+  );
+}
+
+function sanitizeVisibleAssistantText(input: string): string {
+  if (!looksLikeRawVisibleError(input)) {
+    return input;
+  }
+  if (looksLikePageValidationContext(input)) {
+    return "⚠️ Page validation failed: could not connect to the target address, so the target content could not be confirmed.";
+  }
+  if (/\bSSL routines\b|\btls_get_more_records\b|\bbad record mac\b|\bopenssl\b/iu.test(input)) {
+    return "⚠️ Validation failed: a network or secure connection error prevented the check.";
+  }
+  if (
+    /\b(?:connect|request|fetch)\s+(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)\b/iu.test(
+      input,
+    )
+  ) {
+    return "⚠️ Validation failed: could not connect to the target address.";
+  }
+  return "⚠️ Tool execution failed. Check the verification log or retry.";
 }
 
 function includesAny(input: string, patterns: readonly RegExp[]): boolean {
@@ -606,6 +656,7 @@ export function createAcpReplyProjector(params: {
       if (!text) {
         return;
       }
+      text = sanitizeVisibleAssistantText(text);
       if (
         pendingHiddenBoundary &&
         shouldInsertSeparator({
