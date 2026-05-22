@@ -3,7 +3,11 @@ import { prefixSystemMessage } from "../../infra/system-message.js";
 import { createAcpReplyProjector } from "./acp-projector.js";
 import { createAcpTestConfig as createCfg } from "./test-fixtures/acp-runtime.js";
 
-type Delivery = { kind: string; text?: string };
+type Delivery = {
+  kind: string;
+  text?: string;
+  meta?: { toolStatus?: string; allowEdit?: boolean };
+};
 
 function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   let count = 0;
@@ -23,8 +27,19 @@ function createProjectorHarness(
   const projector = createAcpReplyProjector({
     cfg: createCfg(cfgOverrides),
     shouldSendToolSummaries: true,
-    deliver: async (kind, payload) => {
-      deliveries.push({ kind, text: payload.text });
+    deliver: async (kind, payload, meta) => {
+      const visibleMeta =
+        meta?.toolStatus || meta?.allowEdit != null
+          ? {
+              ...(meta.toolStatus ? { toolStatus: meta.toolStatus } : {}),
+              ...(meta.allowEdit != null ? { allowEdit: meta.allowEdit } : {}),
+            }
+          : undefined;
+      deliveries.push({
+        kind,
+        text: payload.text,
+        ...(visibleMeta ? { meta: visibleMeta } : {}),
+      });
       return true;
     },
     onProgress: opts?.onProgress,
@@ -135,7 +150,7 @@ async function emitToolLifecycleEvent(
   event: {
     tag: "tool_call" | "tool_call_update";
     toolCallId: string;
-    status: "in_progress" | "completed";
+    status: "in_progress" | "completed" | "failed" | "error" | "cancelled";
     title?: string;
     text: string;
   },
@@ -189,6 +204,155 @@ async function runHiddenBoundaryCase(params: {
 }
 
 describe("createAcpReplyProjector", () => {
+  it("delivers live MEDIA references as final payloads so attachments are not hidden behind streamed block text", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      createLiveCfgOverrides({ coalesceIdleMs: 0, maxChunkChars: 512 }),
+    );
+
+    await projector.onEvent({
+      type: "text_delta",
+      text: "Corrected file ready.\nMEDIA:/tmp/openclaw/out/report.xlsx",
+      tag: "agent_message_chunk",
+    });
+    await projector.flush(true);
+
+    expect(deliveries).toEqual([
+      {
+        kind: "final",
+        text: "Corrected file ready.\nMEDIA:/tmp/openclaw/out/report.xlsx",
+      },
+    ]);
+  });
+
+  it("emits a terminal tool update when a hidden completion would otherwise leave a visible tool card pending", async () => {
+    const { deliveries, projector } = createProjectorHarness({
+      acp: {
+        enabled: true,
+        stream: {
+          deliveryMode: "live",
+          tagVisibility: {
+            tool_call: true,
+            tool_call_update: false,
+          },
+        },
+      },
+    });
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call",
+      toolCallId: "read-1",
+      status: "in_progress",
+      title: "Read File",
+      text: "Read File (in_progress)",
+    });
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "read-1",
+      status: "completed",
+      title: "Read File",
+      text: "Read File (completed)",
+    });
+
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[0]).toMatchObject({ kind: "tool" });
+    expect(deliveries[1]).toMatchObject({
+      kind: "tool",
+      meta: { toolStatus: "completed", allowEdit: true },
+    });
+    expect(deliveries[1]?.text).toContain("completed");
+  });
+
+  it("sanitizes breadcrumb-heavy browser validation failures in live tool updates", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+    const breadcrumb =
+      "run node inline script (heredoc) → run const browser → run const context → run await → run const page → run const → run page.on(request, req → run if → run }) → run await → run await → run const text → run const checks → run text.includes(fy target), → run text.includes(ytd budget), → run console.log(json.stringify({ → run console.log(text.split(n).slice(20,90).join(n)) → run await → run await → run if → run node (repo) failed";
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "browser-check-1",
+      status: "failed",
+      title: breadcrumb,
+      text: breadcrumb,
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.kind).toBe("tool");
+    expect(deliveries[0]?.text).toContain("Page validation failed");
+    expect(deliveries[0]?.text).not.toMatch(/heredoc|const browser|page\.on|console\.log|await|→/i);
+  });
+
+  it("keeps in-progress tool visibility but summarizes inline browser validation as user-readable progress", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call",
+      toolCallId: "browser-check-2",
+      status: "in_progress",
+      title: "run node inline script (heredoc)",
+      text: "run node inline script (heredoc) → run const browser → run const page",
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.kind).toBe("tool");
+    expect(deliveries[0]?.text).toContain("Validating page");
+    expect(deliveries[0]?.text).not.toMatch(/heredoc|const browser|→/i);
+  });
+
+  it("adds a visible correction when a validation success claim is followed by a terminal tool failure", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness({
+      coalesceIdleMs: 0,
+      maxChunkChars: 256,
+    });
+
+    await projector.onEvent({
+      type: "text_delta",
+      text: "已验证通过，页面已经出现 FY TARGET 和 YTD BUDGET。",
+      tag: "agent_message_chunk",
+    });
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "browser-check-3",
+      status: "failed",
+      title: "run node inline script (heredoc)",
+      text: "run node inline script (heredoc) → run const browser → run console.log → run node (repo) failed",
+    });
+
+    const toolText = deliveries
+      .filter((entry) => entry.kind === "tool")
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+    expect(toolText).toContain("Validation not confirmed");
+    expect(toolText).not.toMatch(/heredoc|const browser|console\.log|→/i);
+  });
+
+  it("sanitizes terminal browser validation failures when flushing final-only delivery", async () => {
+    const { deliveries, projector } = createProjectorHarness({
+      acp: {
+        enabled: true,
+        stream: {
+          deliveryMode: "final_only",
+          tagVisibility: {
+            tool_call_update: true,
+          },
+        },
+      },
+    });
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "browser-check-4",
+      status: "failed",
+      title: "run node inline script (heredoc)",
+      text: "run node inline script (heredoc) → run const browser → run page.on(request, req → run node (repo) failed",
+    });
+    await projector.flush(true);
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.kind).toBe("tool");
+    expect(deliveries[0]?.text).toContain("Page validation failed");
+    expect(deliveries[0]?.text).not.toMatch(/heredoc|const browser|page\.on|→/i);
+  });
+
   it("reports progress for ACP runtime events before delivery filtering", async () => {
     const onProgress = vi.fn();
     const { projector } = createProjectorHarness(undefined, { onProgress });
@@ -691,8 +855,12 @@ describe("createAcpReplyProjector", () => {
       text: "Run tests (completed)",
     });
 
-    expect(deliveries.length).toBe(1);
+    expect(deliveries.length).toBe(2);
     expectToolCallSummary(deliveries[0]);
+    expect(deliveries[1]).toMatchObject({
+      kind: "tool",
+      meta: { toolStatus: "completed", allowEdit: true },
+    });
   });
 
   it("inserts a space boundary before visible text after hidden tool updates by default", async () => {
