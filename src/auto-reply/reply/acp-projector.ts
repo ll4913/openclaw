@@ -1,6 +1,5 @@
 import type { AcpRuntimeEvent, AcpSessionUpdateTag } from "../../acp/runtime/types.js";
 import { EmbeddedBlockChunker } from "../../agents/pi-embedded-block-chunker.js";
-import { formatToolSummary, resolveToolDisplay } from "../../agents/tool-display.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prefixSystemMessage } from "../../infra/system-message.js";
 import {
@@ -146,7 +145,17 @@ function isInternalToolBreadcrumb(input: string): boolean {
 }
 
 function classifyToolSummary(event: Extract<AcpRuntimeEvent, { type: "tool_call" }>): {
-  action: "page_validation" | "script" | "test" | "build" | "git" | "openclaw" | "tool";
+  action:
+    | "page_validation"
+    | "script"
+    | "test"
+    | "build"
+    | "git"
+    | "openclaw"
+    | "file_read"
+    | "file_write"
+    | "file_edit"
+    | "tool";
   internal: boolean;
 } {
   const title = normalizeOptionalString(event.title);
@@ -175,14 +184,23 @@ function classifyToolSummary(event: Extract<AcpRuntimeEvent, { type: "tool_call"
   if (isInlineScript || isScriptFailure) {
     return { action: "script", internal };
   }
-  if (/\b(?:pnpm|npm|yarn|bun)\b.*\btest\b/iu.test(lower)) {
+  if (/\b(?:pnpm|npm|yarn|bun)\b.*\btest\b|\brun(?:ning)? tests?\b|\btests?\b/iu.test(lower)) {
     return { action: "test", internal };
   }
-  if (/\b(?:pnpm|npm|yarn|bun)\b.*\bbuild\b/iu.test(lower)) {
+  if (/\b(?:pnpm|npm|yarn|bun)\b.*\bbuild\b|\brun(?:ning)? builds?\b|\bbuild\b/iu.test(lower)) {
     return { action: "build", internal };
   }
   if (/\bgit\b/iu.test(lower)) {
     return { action: "git", internal };
+  }
+  if (/\bread\s+files?\b|\bread\b.*\bfiles?\b|\bfile\s+read\b/iu.test(lower)) {
+    return { action: "file_read", internal };
+  }
+  if (/\bwrite\s+files?\b|\bwrite\b.*\bfiles?\b|\bfile\s+write\b/iu.test(lower)) {
+    return { action: "file_write", internal };
+  }
+  if (/\bedit\s+files?\b|\bedit\b.*\bfiles?\b|\bfile\s+edit\b/iu.test(lower)) {
+    return { action: "file_edit", internal };
   }
   if (/\bopenclaw\b/iu.test(lower)) {
     return { action: "openclaw", internal };
@@ -194,7 +212,7 @@ function renderClassifiedToolSummary(params: {
   action: ReturnType<typeof classifyToolSummary>["action"];
   status?: string;
   successClaimSeen: boolean;
-}): string | undefined {
+}): string {
   const failed = params.status ? FAILED_TOOL_STATUSES.has(params.status) : false;
   const completed =
     params.status === "completed" || params.status === "done" || params.status === "success";
@@ -263,13 +281,43 @@ function renderClassifiedToolSummary(params: {
     return "🛠️ Running OpenClaw check.";
   }
 
+  if (params.action === "file_read") {
+    if (failed) {
+      return "⚠️ File read failed.";
+    }
+    if (completed) {
+      return "✅ Finished reading files.";
+    }
+    return "🛠️ Reading files.";
+  }
+
+  if (params.action === "file_write") {
+    if (failed) {
+      return "⚠️ File write failed.";
+    }
+    if (completed) {
+      return "✅ Finished writing files.";
+    }
+    return "🛠️ Writing files.";
+  }
+
+  if (params.action === "file_edit") {
+    if (failed) {
+      return "⚠️ File edit failed.";
+    }
+    if (completed) {
+      return "✅ Finished editing files.";
+    }
+    return "🛠️ Editing files.";
+  }
+
   if (failed) {
     return "⚠️ Tool execution failed.";
   }
   if (completed) {
     return "✅ Tool execution completed.";
   }
-  return undefined;
+  return "🛠️ Running tool.";
 }
 
 function resolveHiddenBoundarySeparatorText(mode: AcpHiddenBoundarySeparator): string {
@@ -354,35 +402,11 @@ function renderToolSummaryText(
 ): string {
   const status = normalizeToolStatus(event.status);
   const classification = classifyToolSummary(event);
-  if (classification.internal) {
-    const rendered = renderClassifiedToolSummary({
-      action: classification.action,
-      status,
-      successClaimSeen: opts.successClaimSeen,
-    });
-    if (rendered) {
-      return rendered;
-    }
-  }
-
-  const detailParts: string[] = [];
-  const title = normalizeOptionalString(event.title);
-  if (title) {
-    detailParts.push(title);
-  }
-  const rawStatus = normalizeOptionalString(event.status);
-  if (rawStatus) {
-    detailParts.push(`status=${rawStatus}`);
-  }
-  const fallback = normalizeOptionalString(event.text);
-  if (detailParts.length === 0 && fallback) {
-    detailParts.push(fallback);
-  }
-  const display = resolveToolDisplay({
-    name: "tool_call",
-    meta: detailParts.join(" · ") || "tool call",
+  return renderClassifiedToolSummary({
+    action: classification.action,
+    status,
+    successClaimSeen: opts.successClaimSeen,
   });
-  return formatToolSummary(display);
 }
 
 export type AcpReplyProjector = {
