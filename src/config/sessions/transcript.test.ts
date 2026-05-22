@@ -232,6 +232,30 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     expect(messageLine.message.content[0].text).toBe("Hello from delivery mirror!");
   });
 
+  it("sanitizes raw validation errors before appending delivery mirrors", async () => {
+    writeTranscriptStore();
+
+    const result = await appendAssistantMessageToSessionTranscript({
+      sessionKey,
+      text:
+        "失败。\n\n我刚刚重新用 Node 原生 HTTP 实际请求：\n\n" +
+        "`http://127.0.0.1:9/not-found`\n\n结果仍然是：\n\n" +
+        "`ECONNREFUSED connect ECONNREFUSED 127.0.0.1:9`\n\n" +
+        "页面没有返回内容，所以不能验证其中是否包含 `FY TARGET` 和 `YTD BUDGET`。",
+      storePath: fixture.storePath(),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const lines = fs.readFileSync(result.sessionFile, "utf-8").trim().split("\n");
+    const messageLine = JSON.parse(lines[1]);
+    const text = messageLine.message.content[0].text;
+    expect(text).toContain("Page validation failed");
+    expect(text).not.toMatch(/ECONNREFUSED|Connection refused|Couldn't connect/i);
+  });
+
   it("does not append a duplicate delivery mirror when the latest assistant message already matches", async () => {
     writeTranscriptStore();
 
