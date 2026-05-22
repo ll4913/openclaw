@@ -24,7 +24,11 @@ const ACP_LIVE_SOFT_FLUSH_CHARS = 220;
 const ACP_LIVE_HARD_FLUSH_CHARS = 480;
 
 const TERMINAL_TOOL_STATUSES = new Set(["completed", "failed", "cancelled", "done", "error"]);
+const FAILED_TOOL_STATUSES = new Set(["failed", "cancelled", "error"]);
 const HIDDEN_BOUNDARY_TAGS = new Set<AcpSessionUpdateTag>(["tool_call", "tool_call_update"]);
+const SUCCESS_CLAIM_PATTERN =
+  /(已验证|验证通过|通过验证|成功|verified|passed|validation passed|confirmed)/iu;
+const MEDIA_REFERENCE_PATTERN = /\bMEDIA:\s*\S+/iu;
 
 export type AcpProjectedDeliveryMeta = {
   tag?: AcpSessionUpdateTag;
@@ -61,6 +65,161 @@ function hashText(text: string): string {
 function normalizeToolStatus(status: string | undefined): string | undefined {
   const normalized = normalizeOptionalLowercaseString(status);
   return normalized || undefined;
+}
+
+function containsMediaReference(input: string): boolean {
+  return MEDIA_REFERENCE_PATTERN.test(input);
+}
+
+function includesAny(input: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(input));
+}
+
+function countMatches(input: string, pattern: RegExp): number {
+  return Array.from(input.matchAll(pattern)).length;
+}
+
+function isInternalToolBreadcrumb(input: string): boolean {
+  return (
+    input.includes("→") ||
+    countMatches(input, /\brun\s+/giu) >= 3 ||
+    includesAny(input, [
+      /\bheredoc\b/iu,
+      /\binline script\b/iu,
+      /\bconst\s+(?:browser|context|page|text|checks)\b/iu,
+      /\bpage\.on\s*\(/iu,
+      /\bconsole\.log\s*\(/iu,
+      /\btext\.includes\s*\(/iu,
+      /\b(?:node|python3?|ruby|php)\s+\([^)]*\)\s+failed\b/iu,
+    ])
+  );
+}
+
+function classifyToolSummary(event: Extract<AcpRuntimeEvent, { type: "tool_call" }>): {
+  action: "page_validation" | "script" | "test" | "build" | "git" | "openclaw" | "tool";
+  internal: boolean;
+} {
+  const title = normalizeOptionalString(event.title);
+  const text = normalizeOptionalString(event.text);
+  const combined = `${title}\n${text}`;
+  const lower = combined.toLowerCase();
+  const internal = isInternalToolBreadcrumb(combined);
+  const isInlineScript = /\b(?:node|python3?|ruby|php)\b.*\b(?:inline script|heredoc)\b/iu.test(
+    combined,
+  );
+  const isScriptFailure = /\b(?:node|python3?|ruby|php)\s+\([^)]*\)\s+failed\b/iu.test(combined);
+  const looksLikePageValidation =
+    (isInlineScript || isScriptFailure || /\bbrowser\b|\bplaywright\b|\bpage\b/iu.test(combined)) &&
+    includesAny(combined, [
+      /\bbrowser\b/iu,
+      /\bplaywright\b/iu,
+      /\bpage\b/iu,
+      /\btext\.includes\s*\(/iu,
+      /\bfy target\b/iu,
+      /\bytd budget\b/iu,
+    ]);
+
+  if (looksLikePageValidation) {
+    return { action: "page_validation", internal };
+  }
+  if (isInlineScript || isScriptFailure) {
+    return { action: "script", internal };
+  }
+  if (/\b(?:pnpm|npm|yarn|bun)\b.*\btest\b/iu.test(lower)) {
+    return { action: "test", internal };
+  }
+  if (/\b(?:pnpm|npm|yarn|bun)\b.*\bbuild\b/iu.test(lower)) {
+    return { action: "build", internal };
+  }
+  if (/\bgit\b/iu.test(lower)) {
+    return { action: "git", internal };
+  }
+  if (/\bopenclaw\b/iu.test(lower)) {
+    return { action: "openclaw", internal };
+  }
+  return { action: "tool", internal };
+}
+
+function renderClassifiedToolSummary(params: {
+  action: ReturnType<typeof classifyToolSummary>["action"];
+  status?: string;
+  successClaimSeen: boolean;
+}): string | undefined {
+  const failed = params.status ? FAILED_TOOL_STATUSES.has(params.status) : false;
+  const completed =
+    params.status === "completed" || params.status === "done" || params.status === "success";
+
+  if (failed && params.successClaimSeen && params.action === "page_validation") {
+    return "⚠️ Validation not confirmed: a later page validation failed, so the earlier success claim needs another check.";
+  }
+
+  if (params.action === "page_validation") {
+    if (failed) {
+      return "⚠️ Page validation failed: could not confirm the target content appeared.";
+    }
+    if (completed) {
+      return "✅ Page validation completed.";
+    }
+    return "🛠️ Validating page.";
+  }
+
+  if (params.action === "script") {
+    if (failed) {
+      return "⚠️ Script execution failed. Check the verification log or retry.";
+    }
+    if (completed) {
+      return "✅ Script execution completed.";
+    }
+    return "🛠️ Running script.";
+  }
+
+  if (params.action === "test") {
+    if (failed) {
+      return "⚠️ Tests failed.";
+    }
+    if (completed) {
+      return "✅ Tests completed.";
+    }
+    return "🛠️ Running tests.";
+  }
+
+  if (params.action === "build") {
+    if (failed) {
+      return "⚠️ Build failed.";
+    }
+    if (completed) {
+      return "✅ Build completed.";
+    }
+    return "🛠️ Running build.";
+  }
+
+  if (params.action === "git") {
+    if (failed) {
+      return "⚠️ Git operation failed.";
+    }
+    if (completed) {
+      return "✅ Git operation completed.";
+    }
+    return "🛠️ Running Git operation.";
+  }
+
+  if (params.action === "openclaw") {
+    if (failed) {
+      return "⚠️ OpenClaw check failed.";
+    }
+    if (completed) {
+      return "✅ OpenClaw check completed.";
+    }
+    return "🛠️ Running OpenClaw check.";
+  }
+
+  if (failed) {
+    return "⚠️ Tool execution failed.";
+  }
+  if (completed) {
+    return "✅ Tool execution completed.";
+  }
+  return undefined;
 }
 
 function resolveHiddenBoundarySeparatorText(mode: AcpHiddenBoundarySeparator): string {
@@ -139,15 +298,31 @@ function shouldFlushLiveBufferOnIdle(text: string): boolean {
   return false;
 }
 
-function renderToolSummaryText(event: Extract<AcpRuntimeEvent, { type: "tool_call" }>): string {
+function renderToolSummaryText(
+  event: Extract<AcpRuntimeEvent, { type: "tool_call" }>,
+  opts: { successClaimSeen: boolean },
+): string {
+  const status = normalizeToolStatus(event.status);
+  const classification = classifyToolSummary(event);
+  if (classification.internal) {
+    const rendered = renderClassifiedToolSummary({
+      action: classification.action,
+      status,
+      successClaimSeen: opts.successClaimSeen,
+    });
+    if (rendered) {
+      return rendered;
+    }
+  }
+
   const detailParts: string[] = [];
   const title = normalizeOptionalString(event.title);
   if (title) {
     detailParts.push(title);
   }
-  const status = normalizeOptionalString(event.status);
-  if (status) {
-    detailParts.push(`status=${status}`);
+  const rawStatus = normalizeOptionalString(event.status);
+  if (rawStatus) {
+    detailParts.push(`status=${rawStatus}`);
   }
   const fallback = normalizeOptionalString(event.text);
   if (detailParts.length === 0 && fallback) {
@@ -206,6 +381,7 @@ export function createAcpReplyProjector(params: {
   let liveBufferText = "";
   let finalOnlyOutputText = "";
   let liveIdleTimer: NodeJS.Timeout | undefined;
+  let successClaimSeen = false;
   const pendingToolDeliveries: BufferedToolDelivery[] = [];
   const toolLifecycleById = new Map<string, ToolLifecycleState>();
 
@@ -275,6 +451,7 @@ export function createAcpReplyProjector(params: {
     liveBufferText = "";
     finalOnlyOutputText = "";
     pendingToolDeliveries.length = 0;
+    successClaimSeen = false;
     toolLifecycleById.clear();
   };
 
@@ -335,15 +512,18 @@ export function createAcpReplyProjector(params: {
     lastStatusHash = hash;
   };
 
-  const emitToolSummary = async (event: Extract<AcpRuntimeEvent, { type: "tool_call" }>) => {
+  const emitToolSummary = async (
+    event: Extract<AcpRuntimeEvent, { type: "tool_call" }>,
+    opts?: { forceVisible?: boolean },
+  ) => {
     if (!params.shouldSendToolSummaries) {
       return;
     }
-    if (!isAcpTagVisible(settings, event.tag)) {
+    if (!opts?.forceVisible && !isAcpTagVisible(settings, event.tag)) {
       return;
     }
 
-    const renderedToolSummary = renderToolSummaryText(event);
+    const renderedToolSummary = renderToolSummaryText(event, { successClaimSeen });
     const toolSummary = truncateText(renderedToolSummary, settings.maxSessionUpdateChars);
     const hash = hashText(renderedToolSummary);
     const toolCallId = normalizeOptionalString(event.toolCallId);
@@ -444,9 +624,19 @@ export function createAcpReplyProjector(params: {
       const remaining = settings.maxOutputChars - emittedOutputChars;
       const accepted = remaining < text.length ? text.slice(0, remaining) : text;
       if (accepted.length > 0) {
+        if (SUCCESS_CLAIM_PATTERN.test(accepted)) {
+          successClaimSeen = true;
+        }
         emittedOutputChars += accepted.length;
         lastVisibleOutputTail = accepted.slice(-1);
         if (settings.deliveryMode === "live") {
+          if (containsMediaReference(accepted)) {
+            clearLiveIdleTimer();
+            flushLiveBuffer({ force: true });
+            await flush(true);
+            await params.deliver("final", { text: accepted });
+            return;
+          }
           liveBufferText += accepted;
           if (shouldFlushLiveBufferOnBoundary(liveBufferText)) {
             clearLiveIdleTimer();
@@ -486,9 +676,14 @@ export function createAcpReplyProjector(params: {
 
     if (event.type === "tool_call") {
       if (!isAcpTagVisible(settings, event.tag)) {
+        const toolCallId = normalizeOptionalString(event.toolCallId);
+        const status = normalizeToolStatus(event.status);
+        const isTerminal = status ? TERMINAL_TOOL_STATUSES.has(status) : false;
+        if (isTerminal && toolCallId && toolLifecycleById.get(toolCallId)?.started) {
+          await emitToolSummary(event, { forceVisible: true });
+          return;
+        }
         if (event.tag && HIDDEN_BOUNDARY_TAGS.has(event.tag)) {
-          const status = normalizeToolStatus(event.status);
-          const isTerminal = status ? TERMINAL_TOOL_STATUSES.has(status) : false;
           pendingHiddenBoundary = pendingHiddenBoundary || event.tag === "tool_call" || isTerminal;
         }
         return;
