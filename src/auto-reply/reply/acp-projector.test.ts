@@ -83,7 +83,8 @@ function combinedBlockText(deliveries: Delivery[]) {
 
 function expectToolCallSummary(delivery: Delivery | undefined) {
   expect(delivery?.kind).toBe("tool");
-  expect(delivery?.text).toContain("Tool Call");
+  expect(delivery?.text).toMatch(/Running tests|Tool execution completed|Running tool/i);
+  expect(delivery?.text).not.toMatch(/Tool Call|status=/i);
 }
 
 function createFinalOnlyStatusToolHarness() {
@@ -259,7 +260,41 @@ describe("createAcpReplyProjector", () => {
       kind: "tool",
       meta: { toolStatus: "completed", allowEdit: true },
     });
-    expect(deliveries[1]?.text).toContain("completed");
+    expect(deliveries[1]?.text).toContain("Finished reading files");
+    expect(deliveries[1]?.text).not.toMatch(/Tool Call|status=/i);
+  });
+
+  it("summarizes visible file reads without leaking raw tool-call status labels", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call",
+      toolCallId: "read-2",
+      status: "in_progress",
+      title: "Read File",
+      text: "Read File, status=pending",
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.kind).toBe("tool");
+    expect(deliveries[0]?.text).toContain("Reading files");
+    expect(deliveries[0]?.text).not.toMatch(/Tool Call|status=pending/i);
+  });
+
+  it("summarizes unknown in-progress tools without leaking generic ACP fallback labels", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call",
+      toolCallId: "unknown-1",
+      status: "in_progress",
+      title: "Custom Tool",
+      text: "Custom Tool, status=pending",
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.text).toContain("Running tool");
+    expect(deliveries[0]?.text).not.toMatch(/Tool Call|status=pending|Custom Tool/i);
   });
 
   it("sanitizes breadcrumb-heavy browser validation failures in live tool updates", async () => {
@@ -912,6 +947,8 @@ describe("createAcpReplyProjector", () => {
       kind: "tool",
       meta: { toolStatus: "completed", allowEdit: true },
     });
+    expect(deliveries[1]?.text).toContain("Tests completed");
+    expect(deliveries[1]?.text).not.toMatch(/Tool Call|status=/i);
   });
 
   it("inserts a space boundary before visible text after hidden tool updates by default", async () => {
