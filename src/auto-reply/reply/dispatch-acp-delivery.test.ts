@@ -218,6 +218,41 @@ describe("createAcpDispatchDeliveryCoordinator", () => {
     expect(coordinator.getRoutedCounts().final).toBe(0);
   });
 
+  it("sanitizes raw ACP validation errors at final delivery boundary", async () => {
+    const dispatcher = createDispatcher();
+    const coordinator = createAcpDispatchDeliveryCoordinator({
+      cfg: createAcpTestConfig(),
+      ctx: buildTestCtx({
+        Provider: "visiblechat",
+        Surface: "visiblechat",
+        SessionKey: "agent:codex-acp:session-1",
+      }),
+      dispatcher,
+      inboundAudio: false,
+      shouldRouteToOriginating: false,
+    });
+
+    await coordinator.deliver(
+      "final",
+      {
+        text:
+          "失败。\n\n我刚才重新用 Node 原生 HTTP 实际请求了 `http://127.0.0.1:9/not-found`，结果是：\n\n" +
+          "`ECONNREFUSED connect ECONNREFUSED 127.0.0.1:9`\n\n" +
+          "所以页面没有返回内容，无法验证是否包含 `FY TARGET` 和 `YTD BUDGET`。",
+      },
+      { skipTts: true },
+    );
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: expect.stringContaining("Page validation failed"),
+    });
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalledWith({
+      text: expect.stringMatching(/ECONNREFUSED|connect ECONNREFUSED/i),
+    });
+    expect(coordinator.getAccumulatedFinalText()).toContain("Page validation failed");
+    expect(coordinator.getAccumulatedFinalText()).not.toMatch(/ECONNREFUSED/i);
+  });
+
   it("tracks visible direct block text for dispatcher-backed delivery", async () => {
     const coordinator = createAcpDispatchDeliveryCoordinator({
       cfg: createAcpTestConfig(),

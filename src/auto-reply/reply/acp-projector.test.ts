@@ -460,6 +460,50 @@ describe("createAcpReplyProjector", () => {
     expect(combinedBlockText(deliveries)).not.toMatch(/ECONNREFUSED|connect ECONNREFUSED/i);
   });
 
+  it("sanitizes assistant connection errors that start with the raw error code", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      createLiveCfgOverrides({
+        coalesceIdleMs: 0,
+        maxChunkChars: 512,
+      }),
+    );
+
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text:
+        "失败。\n\n我刚才重新用 Node 原生 HTTP 实际请求了：\n\n" +
+        "`http://127.0.0.1:9/not-found`\n\n结果：\n\n" +
+        "`ECONNREFUSED connect ECONNREFUSED 127.0.0.1:9`\n\n" +
+        "所以页面没有返回内容，无法验证是否包含 `FY TARGET` 和 `YTD BUDGET`。",
+    });
+    await projector.flush(true);
+
+    expect(combinedBlockText(deliveries)).toContain("Page validation failed");
+    expect(combinedBlockText(deliveries)).not.toMatch(/ECONNREFUSED|connect ECONNREFUSED/i);
+  });
+
+  it("sanitizes plain connection refused assistant text in page validation context", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      createLiveCfgOverrides({
+        coalesceIdleMs: 0,
+        maxChunkChars: 512,
+      }),
+    );
+
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text:
+        "验证失败。\n\n`curl http://127.0.0.1:9/not-found` 返回 `Couldn't connect to server`，" +
+        "`nc -zv 127.0.0.1 9` 返回 `Connection refused`，无法确认 `FY TARGET` 和 `YTD BUDGET`。",
+    });
+    await projector.flush(true);
+
+    expect(combinedBlockText(deliveries)).toContain("Page validation failed");
+    expect(combinedBlockText(deliveries)).not.toMatch(/Connection refused|Couldn't connect/i);
+  });
+
   it("sanitizes raw TLS/OpenSSL assistant text into readable validation failure in final-only delivery", async () => {
     const { deliveries, projector } = createProjectorHarness({
       acp: {
