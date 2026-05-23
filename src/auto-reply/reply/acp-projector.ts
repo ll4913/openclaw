@@ -1,4 +1,5 @@
 import type { AcpRuntimeEvent, AcpSessionUpdateTag } from "../../acp/runtime/types.js";
+import { sanitizeAcpVisibleLocalDeliveryText } from "../../acp/visible-output-sanitizer.js";
 import { EmbeddedBlockChunker } from "../../agents/pi-embedded-block-chunker.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prefixSystemMessage } from "../../infra/system-message.js";
@@ -24,6 +25,7 @@ const ACP_LIVE_HARD_FLUSH_CHARS = 480;
 
 const TERMINAL_TOOL_STATUSES = new Set(["completed", "failed", "cancelled", "done", "error"]);
 const FAILED_TOOL_STATUSES = new Set(["failed", "cancelled", "error"]);
+const SUCCESSFUL_TOOL_STATUSES = new Set(["completed", "done", "success"]);
 const HIDDEN_BOUNDARY_TAGS = new Set<AcpSessionUpdateTag>(["tool_call", "tool_call_update"]);
 const SUCCESS_CLAIM_PATTERN =
   /(已验证|验证通过|通过验证|成功|verified|passed|validation passed|confirmed)/iu;
@@ -102,18 +104,23 @@ function looksLikePageValidationContext(input: string): boolean {
 }
 
 export function sanitizeVisibleAcpAssistantText(input: string): string {
-  if (!looksLikeRawVisibleError(input)) {
-    return input;
+  const localSanitized = sanitizeAcpVisibleLocalDeliveryText(input);
+  if (!looksLikeRawVisibleError(localSanitized)) {
+    return localSanitized;
   }
-  if (looksLikePageValidationContext(input)) {
+  if (looksLikePageValidationContext(localSanitized)) {
     return "⚠️ Page validation failed: could not connect to the target address, so the target content could not be confirmed.";
   }
-  if (/\bSSL routines\b|\btls_get_more_records\b|\bbad record mac\b|\bopenssl\b/iu.test(input)) {
+  if (
+    /\bSSL routines\b|\btls_get_more_records\b|\bbad record mac\b|\bopenssl\b/iu.test(
+      localSanitized,
+    )
+  ) {
     return "⚠️ Validation failed: a network or secure connection error prevented the check.";
   }
   if (
     /\b(?:connect|request|fetch)\s+(?:EPERM|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EACCES)\b/iu.test(
-      input,
+      localSanitized,
     )
   ) {
     return "⚠️ Validation failed: could not connect to the target address.";
@@ -483,6 +490,7 @@ export function createAcpReplyProjector(params: {
   let successClaimSeen = false;
   const pendingToolDeliveries: BufferedToolDelivery[] = [];
   const toolLifecycleById = new Map<string, ToolLifecycleState>();
+  const renderedToolSummaryHashes = new Set<string>();
 
   const clearLiveIdleTimer = () => {
     if (!liveIdleTimer) {
@@ -552,6 +560,7 @@ export function createAcpReplyProjector(params: {
     pendingToolDeliveries.length = 0;
     successClaimSeen = false;
     toolLifecycleById.clear();
+    renderedToolSummaryHashes.clear();
   };
 
   const flushBufferedToolDeliveries = async (force: boolean) => {
@@ -628,6 +637,7 @@ export function createAcpReplyProjector(params: {
     const toolCallId = normalizeOptionalString(event.toolCallId);
     const status = normalizeToolStatus(event.status);
     const isTerminal = status ? TERMINAL_TOOL_STATUSES.has(status) : false;
+    const isSuccessfulTerminal = status ? SUCCESSFUL_TOOL_STATUSES.has(status) : false;
     const isStart = status === "in_progress" || event.tag === "tool_call";
 
     if (settings.repeatSuppression) {
@@ -656,6 +666,13 @@ export function createAcpReplyProjector(params: {
       } else if (lastToolHash === hash) {
         return;
       }
+      if (!isTerminal && renderedToolSummaryHashes.has(hash)) {
+        return;
+      }
+    }
+    if (isSuccessfulTerminal) {
+      renderedToolSummaryHashes.add(hash);
+      return;
     }
 
     const deliveryMeta: AcpProjectedDeliveryMeta = {
@@ -674,6 +691,9 @@ export function createAcpReplyProjector(params: {
       await params.deliver("tool", { text: toolSummary }, deliveryMeta);
     }
     lastToolHash = hash;
+    if (!isTerminal) {
+      renderedToolSummaryHashes.add(hash);
+    }
   };
 
   const emitTruncationNotice = async () => {

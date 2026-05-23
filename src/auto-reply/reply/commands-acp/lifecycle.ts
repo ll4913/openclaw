@@ -15,6 +15,7 @@ import {
   resolveAcpSessionCwd,
   resolveAcpThreadSessionDetailLines,
 } from "../../../acp/runtime/session-identifiers.js";
+import { resolveSessionStorePathForAcp } from "../../../acp/runtime/session-meta.js";
 import { resolveAcpSpawnRuntimePolicyError } from "../../../agents/acp-spawn.js";
 import { getChannelPlugin, normalizeChannelId } from "../../../channels/plugins/index.js";
 import {
@@ -466,10 +467,11 @@ async function persistSpawnedSessionLabel(params: {
       };
     }
   }
-  if (!params.commandParams.storePath) {
-    return;
-  }
-  await updateSessionStore(params.commandParams.storePath, (store) => {
+  const { storePath } = resolveSessionStorePathForAcp({
+    cfg: params.commandParams.cfg,
+    sessionKey: params.sessionKey,
+  });
+  await updateSessionStore(storePath, (store) => {
     const existing = store[params.sessionKey];
     if (!existing) {
       return;

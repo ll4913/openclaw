@@ -83,7 +83,9 @@ function combinedBlockText(deliveries: Delivery[]) {
 
 function expectToolCallSummary(delivery: Delivery | undefined) {
   expect(delivery?.kind).toBe("tool");
-  expect(delivery?.text).toMatch(/Running tests|Tool execution completed|Running tool/i);
+  expect(delivery?.text).toMatch(
+    /Running tests|Tests failed|Tool execution completed|Tool execution failed|Running tool/i,
+  );
   expect(delivery?.text).not.toMatch(/Tool Call|status=/i);
 }
 
@@ -225,7 +227,7 @@ describe("createAcpReplyProjector", () => {
     ]);
   });
 
-  it("emits a terminal tool update when a hidden completion would otherwise leave a visible tool card pending", async () => {
+  it("hides ordinary terminal completions when a visible tool card is already pending", async () => {
     const { deliveries, projector } = createProjectorHarness({
       acp: {
         enabled: true,
@@ -254,14 +256,10 @@ describe("createAcpReplyProjector", () => {
       text: "Read File (completed)",
     });
 
-    expect(deliveries).toHaveLength(2);
+    expect(deliveries).toHaveLength(1);
     expect(deliveries[0]).toMatchObject({ kind: "tool" });
-    expect(deliveries[1]).toMatchObject({
-      kind: "tool",
-      meta: { toolStatus: "completed", allowEdit: true },
-    });
-    expect(deliveries[1]?.text).toContain("Finished reading files");
-    expect(deliveries[1]?.text).not.toMatch(/Tool Call|status=/i);
+    expect(deliveries[0]?.text).toContain("Reading files");
+    expect(deliveries[0]?.text).not.toMatch(/Tool execution completed|Finished reading files/i);
   });
 
   it("summarizes visible file reads without leaking raw tool-call status labels", async () => {
@@ -295,6 +293,57 @@ describe("createAcpReplyProjector", () => {
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]?.text).toContain("Running tool");
     expect(deliveries[0]?.text).not.toMatch(/Tool Call|status=pending|Custom Tool/i);
+  });
+
+  it("does not spam generic tool starts and successful completions as separate visible messages", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    for (let index = 0; index < 4; index += 1) {
+      await emitToolLifecycleEvent(projector, {
+        tag: "tool_call",
+        toolCallId: `generic-${index}`,
+        status: "in_progress",
+        title: "Custom Tool",
+        text: "Custom Tool, status=pending",
+      });
+      await emitToolLifecycleEvent(projector, {
+        tag: "tool_call_update",
+        toolCallId: `generic-${index}`,
+        status: "completed",
+        title: "Custom Tool",
+        text: "Custom Tool, status=completed",
+      });
+    }
+
+    const toolTexts = deliveries
+      .filter((entry) => entry.kind === "tool")
+      .map((entry) => entry.text ?? "");
+
+    expect(toolTexts.filter((text) => /Running tool/i.test(text))).toHaveLength(1);
+    expect(toolTexts.join("\n")).not.toMatch(/Tool execution completed/i);
+  });
+
+  it("marks localhost links as local-only candidates and redacts chat-visible credentials", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      createLiveCfgOverrides({
+        coalesceIdleMs: 0,
+        maxChunkChars: 1024,
+      }),
+    );
+
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text:
+        "好了，代码已接好并在 localhost:3002 浏览器验证通过。\n" +
+        "请打开 http://localhost:3002/ops-briefing，用户名 `liang`，密码 `DoNotLeak123`。",
+    });
+    await projector.flush(true);
+
+    const text = combinedBlockText(deliveries);
+    expect(text).toContain("Local verification only");
+    expect(text).toContain("Credentials redacted");
+    expect(text).not.toContain("DoNotLeak123");
   });
 
   it("sanitizes breadcrumb-heavy browser validation failures in live tool updates", async () => {
@@ -853,12 +902,11 @@ describe("createAcpReplyProjector", () => {
       text: "List files (completed)",
     });
 
-    expect(deliveries.length).toBe(2);
+    expect(deliveries.length).toBe(1);
     expectToolCallSummary(deliveries[0]);
-    expectToolCallSummary(deliveries[1]);
   });
 
-  it("keeps terminal tool updates even when rendered summaries are truncated", async () => {
+  it("keeps terminal tool failures even when rendered summaries are truncated", async () => {
     const { deliveries, projector } = createLiveToolLifecycleHarness({
       maxSessionUpdateChars: 48,
     });
@@ -875,9 +923,9 @@ describe("createAcpReplyProjector", () => {
     await emitToolLifecycleEvent(projector, {
       tag: "tool_call_update",
       toolCallId: "call_truncated_status",
-      status: "completed",
+      status: "failed",
       title: longTitle,
-      text: `${longTitle} (completed)`,
+      text: `${longTitle} (failed)`,
     });
 
     expect(deliveries.length).toBe(2);
@@ -1047,18 +1095,18 @@ describe("createAcpReplyProjector", () => {
       type: "tool_call",
       tag: "tool_call_update",
       toolCallId: "c1",
-      status: "completed",
+      status: "failed",
       title: "Run tests",
-      text: "Run tests (completed)",
+      text: "Run tests (failed)",
     });
 
     expect(deliveries.length).toBe(2);
     expectToolCallSummary(deliveries[0]);
     expect(deliveries[1]).toMatchObject({
       kind: "tool",
-      meta: { toolStatus: "completed", allowEdit: true },
+      meta: { toolStatus: "failed", allowEdit: true },
     });
-    expect(deliveries[1]?.text).toContain("Tests completed");
+    expect(deliveries[1]?.text).toContain("Tests failed");
     expect(deliveries[1]?.text).not.toMatch(/Tool Call|status=/i);
   });
 

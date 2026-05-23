@@ -610,6 +610,20 @@ async function finalizeAcpTurnOutput(params: {
     }
   }
 
+  if (!hasAssistantOutput && !params.delivery.hasDeliveredFinalReply()) {
+    const delivered = await params.delivery.deliver(
+      "final",
+      {
+        text: prefixSystemMessage(
+          "ACP completed without visible output or a final answer. It only produced internal progress, so I did not silently drop this turn. Run /acp status if this keeps happening.",
+        ),
+        isFallbackNotice: true,
+      },
+      { skipTts: true },
+    );
+    queuedFinal = queuedFinal || delivered;
+  }
+
   return queuedFinal;
 }
 

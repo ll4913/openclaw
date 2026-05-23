@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
+import { sanitizeAcpVisibleLocalDeliveryText } from "../../acp/visible-output-sanitizer.js";
 import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
@@ -85,13 +86,18 @@ function includesAnyPattern(input: string, patterns: readonly RegExp[]): boolean
 }
 
 export function sanitizeVisibleDeliveryMirrorText(input: string): string {
-  if (!includesAnyPattern(input, RAW_VISIBLE_DELIVERY_ERROR_PATTERNS)) {
-    return input;
+  const localSanitized = sanitizeAcpVisibleLocalDeliveryText(input);
+  if (!includesAnyPattern(localSanitized, RAW_VISIBLE_DELIVERY_ERROR_PATTERNS)) {
+    return localSanitized;
   }
-  if (includesAnyPattern(input, PAGE_VALIDATION_DELIVERY_CONTEXT_PATTERNS)) {
+  if (includesAnyPattern(localSanitized, PAGE_VALIDATION_DELIVERY_CONTEXT_PATTERNS)) {
     return "Page validation failed: could not connect to the target address, so the target content could not be confirmed.";
   }
-  if (/\bSSL routines\b|\btls_get_more_records\b|\bbad record mac\b|\bopenssl\b/iu.test(input)) {
+  if (
+    /\bSSL routines\b|\btls_get_more_records\b|\bbad record mac\b|\bopenssl\b/iu.test(
+      localSanitized,
+    )
+  ) {
     return "Validation failed: a network or secure connection error prevented the check.";
   }
   return "Validation failed: could not connect to the target address.";

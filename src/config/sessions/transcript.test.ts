@@ -316,6 +316,29 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     expect(text).not.toMatch(/ECONNREFUSED|Connection refused|Couldn't connect/i);
   });
 
+  it("marks localhost delivery mirrors as local-only candidates and redacts credentials", async () => {
+    writeTranscriptStore();
+
+    const result = await appendAssistantMessageToSessionTranscript({
+      sessionKey,
+      text:
+        "好了，代码已接好并在 localhost:3002 浏览器验证通过。\n" +
+        "请打开 http://localhost:3002/ops-briefing，用户名 `liang`，密码 `DoNotLeak123`。",
+      storePath: fixture.storePath(),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const lines = fs.readFileSync(result.sessionFile, "utf-8").trim().split("\n");
+    const messageLine = JSON.parse(lines[1]);
+    const text = messageLine.message.content[0].text;
+    expect(text).toContain("Local verification only");
+    expect(text).toContain("Credentials redacted");
+    expect(text).not.toContain("DoNotLeak123");
+  });
+
   it("does not append a duplicate delivery mirror when the latest assistant message already matches", async () => {
     writeTranscriptStore();
 

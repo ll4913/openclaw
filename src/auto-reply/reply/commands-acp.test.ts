@@ -18,6 +18,7 @@ const hoisted = vi.hoisted(() => {
   const upsertAcpSessionMetaMock = vi.fn();
   const resolveSessionStorePathForAcpMock = vi.fn();
   const loadSessionStoreMock = vi.fn();
+  const updateSessionStoreMock = vi.fn();
   const sessionBindingCapabilitiesMock = vi.fn();
   const sessionBindingBindMock = vi.fn();
   const sessionBindingListBySessionMock = vi.fn();
@@ -41,6 +42,7 @@ const hoisted = vi.hoisted(() => {
     upsertAcpSessionMetaMock,
     resolveSessionStorePathForAcpMock,
     loadSessionStoreMock,
+    updateSessionStoreMock,
     sessionBindingCapabilitiesMock,
     sessionBindingBindMock,
     sessionBindingListBySessionMock,
@@ -104,6 +106,7 @@ vi.mock("../../config/sessions.js", async () => {
   return {
     ...actual,
     loadSessionStore: (...args: unknown[]) => hoisted.loadSessionStoreMock(...args),
+    updateSessionStore: (...args: unknown[]) => hoisted.updateSessionStoreMock(...args),
   };
 });
 
@@ -906,6 +909,11 @@ describe("/acp command", () => {
       storePath: "/tmp/sessions-acp.json",
     });
     hoisted.loadSessionStoreMock.mockReset().mockReturnValue({});
+    hoisted.updateSessionStoreMock.mockReset().mockImplementation(async (_storePath, mutate) => {
+      const store: Record<string, unknown> = {};
+      mutate(store);
+      return undefined;
+    });
     hoisted.sessionBindingCapabilitiesMock
       .mockReset()
       .mockReturnValue(createSessionBindingCapabilities());
@@ -1172,6 +1180,47 @@ describe("/acp command", () => {
     const result = await handleAcpCommand(params, true);
 
     expect(result?.reply?.text).toContain("Bound this conversation to");
+    expectGatewayMethodNotCalled("sessions.patch");
+  });
+
+  it("persists ACP spawn labels into the target agent session store", async () => {
+    const seededStores: Record<string, Record<string, { label?: string; updatedAt?: number }>> = {
+      "/tmp/cursor-sessions.json": {},
+    };
+    hoisted.resolveSessionStorePathForAcpMock.mockImplementation((args: { sessionKey: string }) => {
+      seededStores["/tmp/cursor-sessions.json"][args.sessionKey] = {
+        updatedAt: 1,
+      };
+      return {
+        cfg: baseCfg,
+        storePath: "/tmp/cursor-sessions.json",
+      };
+    });
+    hoisted.updateSessionStoreMock.mockImplementation(async (storePath, mutate) => {
+      const store = seededStores[String(storePath)] ?? {};
+      seededStores[String(storePath)] = store;
+      mutate(store);
+      return undefined;
+    });
+
+    const result = await handleAcpCommand(
+      createDiscordParams("/acp spawn cursor --bind here --label mc-cursor"),
+      true,
+    );
+
+    expect(result?.reply?.text).toContain("Bound this conversation to");
+    const sessionKey = expect.stringMatching(/^agent:cursor:acp:/);
+    expect(hoisted.resolveSessionStorePathForAcpMock).toHaveBeenCalledWith({
+      cfg: baseCfg,
+      sessionKey,
+    });
+    expect(hoisted.updateSessionStoreMock).toHaveBeenCalledWith(
+      "/tmp/cursor-sessions.json",
+      expect.any(Function),
+    );
+    expect(Object.values(seededStores["/tmp/cursor-sessions.json"] ?? {})).toContainEqual(
+      expect.objectContaining({ label: "mc-cursor" }),
+    );
     expectGatewayMethodNotCalled("sessions.patch");
   });
 

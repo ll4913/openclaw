@@ -374,6 +374,30 @@ function mockToolLifecycleTurn(toolCallId: string) {
   );
 }
 
+function mockToolFailureLifecycleTurn(toolCallId: string) {
+  managerMocks.runTurn.mockImplementation(
+    async ({ onEvent }: { onEvent: (event: unknown) => Promise<void> }) => {
+      await onEvent({
+        type: "tool_call",
+        tag: "tool_call",
+        toolCallId,
+        status: "in_progress",
+        title: "Run command",
+        text: "Run command (in_progress)",
+      });
+      await onEvent({
+        type: "tool_call",
+        tag: "tool_call_update",
+        toolCallId,
+        status: "failed",
+        title: "Run command",
+        text: "Run command (failed)",
+      });
+      await onEvent({ type: "done" });
+    },
+  );
+}
+
 function mockVisibleTextTurn(text = "visible") {
   managerMocks.runTurn.mockImplementationOnce(
     async ({ onEvent }: { onEvent: (event: unknown) => Promise<void> }) => {
@@ -602,7 +626,7 @@ describe("tryDispatchAcpReply", () => {
 
   it("edits ACP tool lifecycle updates in place when supported", async () => {
     setReadyAcpResolution();
-    mockToolLifecycleTurn("call-1");
+    mockToolFailureLifecycleTurn("call-1");
     routeMocks.routeReply.mockResolvedValueOnce({ ok: true, messageId: "tool-msg-1" });
 
     const { dispatcher } = createDispatcher();
@@ -613,7 +637,7 @@ describe("tryDispatchAcpReply", () => {
       shouldRouteToOriginating: true,
     });
 
-    expect(routeMocks.routeReply).toHaveBeenCalledTimes(1);
+    expect(routeMocks.routeReply).toHaveBeenCalledTimes(2);
     expect(messageActionCall().action).toBe("edit");
     expect(requireRecord(messageActionCall().params, "message action params").messageId).toBe(
       "tool-msg-1",
@@ -622,7 +646,7 @@ describe("tryDispatchAcpReply", () => {
 
   it("falls back to new tool message when edit fails", async () => {
     setReadyAcpResolution();
-    mockToolLifecycleTurn("call-2");
+    mockToolFailureLifecycleTurn("call-2");
     routeMocks.routeReply
       .mockResolvedValueOnce({ ok: true, messageId: "tool-msg-2" })
       .mockResolvedValueOnce({ ok: true, messageId: "tool-msg-2-fallback" });
@@ -637,7 +661,29 @@ describe("tryDispatchAcpReply", () => {
     });
 
     expect(messageActionMocks.runMessageAction).toHaveBeenCalledTimes(1);
-    expect(routeMocks.routeReply).toHaveBeenCalledTimes(2);
+    expect(routeMocks.routeReply).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends a final fallback when a routed ACP turn only produced tool progress", async () => {
+    setReadyAcpResolution();
+    mockToolLifecycleTurn("tool-only-final");
+    routeMocks.routeReply.mockResolvedValue({ ok: true, messageId: "mock" });
+
+    const { dispatcher } = createDispatcher();
+    await runDispatch({
+      bodyForAgent: "run tool without final text",
+      cfg: createAcpConfigWithVisibleToolTags(),
+      dispatcher,
+      shouldRouteToOriginating: true,
+    });
+
+    const routedTexts = routeMocks.routeReply.mock.calls.map((call) => {
+      const payload = requireRecord((call[0] as { payload?: unknown }).payload, "route payload");
+      return String(payload.text ?? "");
+    });
+
+    expect(routedTexts.some((text) => /completed without visible output/i.test(text))).toBe(true);
+    expect(routedTexts.at(-1)).toMatch(/completed without visible output/i);
   });
 
   it("starts reply lifecycle when ACP turn starts, including hidden-only turns", async () => {
