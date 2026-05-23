@@ -13,7 +13,7 @@ const DEFAULT_ACP_MAX_SESSION_UPDATE_CHARS = 320;
 
 const ACP_TAG_VISIBILITY_DEFAULTS: Record<AcpSessionUpdateTag, boolean> = {
   agent_message_chunk: true,
-  tool_call: false,
+  tool_call: true,
   tool_call_update: false,
   usage_update: false,
   available_commands_update: false,
