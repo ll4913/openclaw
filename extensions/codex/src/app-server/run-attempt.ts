@@ -3670,6 +3670,12 @@ async function buildDynamicTools(input: DynamicToolBuildParams) {
       });
       input.runAbortController.abort("sessions_yield");
     },
+    onAsyncTaskStarted: (message) => {
+      emitCodexAppServerEvent(params, {
+        stream: "codex_app_server.tool",
+        data: { name: "media_async_task_started", message },
+      });
+    },
   });
   const codexFilteredTools = addNodeShellDynamicToolsIfNeeded(
     addSandboxShellDynamicToolsIfAvailable(

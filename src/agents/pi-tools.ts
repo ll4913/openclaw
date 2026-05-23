@@ -99,6 +99,7 @@ import {
   type ToolSearchCatalogRef,
   type ToolSearchCatalogToolExecutor,
 } from "./tool-search.js";
+import type { MediaGenerateAsyncStartCallback } from "./tools/media-generate-background-shared.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
 
 function isOpenAIProvider(provider?: string) {
@@ -464,6 +465,8 @@ export function createOpenClawCodingTools(options?: {
   authProfileStore?: AuthProfileStore;
   /** Callback invoked when sessions_yield tool is called. */
   onYield?: (message: string) => Promise<void> | void;
+  /** Callback invoked when a media tool starts async background work. */
+  onAsyncTaskStarted?: MediaGenerateAsyncStartCallback;
   /** Optional instrumentation callback for tool preparation stage timing. */
   recordToolPrepStage?: (name: string) => void;
   /** Live observer called after wrapped tool outcomes are recorded. */
@@ -967,6 +970,7 @@ export function createOpenClawCodingTools(options?: {
           inheritedToolAllowlist,
           inheritedToolDenylist,
           onYield: options?.onYield,
+          onAsyncTaskStarted: options?.onAsyncTaskStarted,
           allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
           recordToolPrepStage: options?.recordToolPrepStage,
         })

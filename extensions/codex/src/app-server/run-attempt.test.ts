@@ -811,6 +811,57 @@ describe("runCodexAppServerAttempt", () => {
     expect(tools.map((tool) => tool.name)).toEqual(["read", "write"]);
   });
 
+  it("does not abort Codex dynamic tool turns for media async starts", async () => {
+    let factoryOptions:
+      | {
+          onYield?: (message: string) => Promise<void> | void;
+          onAsyncTaskStarted?: (message: string) => Promise<void> | void;
+        }
+      | undefined;
+    testing.setOpenClawCodingToolsFactoryForTests((options) => {
+      factoryOptions = options;
+      return [
+        createRuntimeDynamicTool("image_generate"),
+        createRuntimeDynamicTool("sessions_yield"),
+      ];
+    });
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createParams(sessionFile, workspaceDir);
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    const sandboxSessionKey = params.sessionKey;
+    if (!sandboxSessionKey) {
+      throw new Error("createParams must provide a sessionKey for Codex dynamic tool tests.");
+    }
+    const runAbortController = new AbortController();
+    let yieldDetected = false;
+
+    await testing.buildDynamicTools({
+      params,
+      resolvedWorkspace: workspaceDir,
+      effectiveWorkspace: workspaceDir,
+      sandboxSessionKey,
+      sandbox: { enabled: true, backendId: "docker" } as never,
+      nativeToolSurfaceEnabled: false,
+      runAbortController,
+      sessionAgentId: "main",
+      pluginConfig: {},
+      onYieldDetected: () => {
+        yieldDetected = true;
+      },
+    });
+
+    await factoryOptions?.onAsyncTaskStarted?.("Image generation started.");
+    expect(yieldDetected).toBe(false);
+    expect(runAbortController.signal.aborted).toBe(false);
+
+    await factoryOptions?.onYield?.("Waiting for subagent.");
+    expect(yieldDetected).toBe(true);
+    expect(runAbortController.signal.aborted).toBe(true);
+    expect(runAbortController.signal.reason).toBe("sessions_yield");
+  });
+
   it("exposes OpenClaw sandbox shell tools under distinct names for non-Docker sandbox backends", async () => {
     testing.setOpenClawCodingToolsFactoryForTests(() => [
       createRuntimeDynamicTool("read"),
