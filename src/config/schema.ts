@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { CHANNEL_IDS } from "../channels/ids.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import { GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA } from "./bundled-channel-config-metadata.generated.js";
 import { computeBaseConfigSchemaResponse } from "./schema-base.js";
@@ -361,14 +360,6 @@ function applyChannelHints(hints: ConfigUiHints, channels: ChannelUiMetadata[]):
 function listHeartbeatTargetChannels(channels: ChannelUiMetadata[]): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
-  for (const id of CHANNEL_IDS) {
-    const normalized = normalizeLowercaseStringOrEmpty(id);
-    if (!normalized || seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    ordered.push(normalized);
-  }
   for (const channel of channels) {
     const normalized = normalizeLowercaseStringOrEmpty(channel.id);
     if (!normalized || seen.has(normalized)) {
