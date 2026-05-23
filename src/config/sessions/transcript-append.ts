@@ -233,6 +233,13 @@ async function withTranscriptAppendQueue<T>(
   }
 }
 
+export async function withSessionTranscriptAppendQueue<T>(
+  transcriptPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return await withTranscriptAppendQueue(transcriptPath, fn);
+}
+
 type AppendSessionTranscriptMessageParams<TMessage = unknown> = {
   transcriptPath: string;
   message: TMessage;
@@ -331,4 +338,10 @@ async function appendSessionTranscriptMessageLocked<TMessage>(
   };
   await fs.appendFile(params.transcriptPath, `${JSON.stringify(entry)}\n`, "utf-8");
   return { messageId, message: finalMessage };
+}
+
+export async function appendSessionTranscriptMessageInCriticalSection<TMessage>(
+  params: AppendSessionTranscriptMessageParams<TMessage>,
+): Promise<{ messageId: string; message: TMessage }> {
+  return await appendSessionTranscriptMessageLocked(params);
 }

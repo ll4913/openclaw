@@ -369,6 +369,36 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     }
   });
 
+  it("dedupes concurrent delivery mirror appends with the same visible text", async () => {
+    writeTranscriptStore();
+
+    const [first, second] = await Promise.all([
+      appendAssistantMessageToSessionTranscript({
+        sessionKey,
+        text: "ACP_CURSOR_SMOKE_OK",
+        storePath: fixture.storePath(),
+      }),
+      appendAssistantMessageToSessionTranscript({
+        sessionKey,
+        text: "ACP_CURSOR_SMOKE_OK",
+        storePath: fixture.storePath(),
+      }),
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (first.ok && second.ok) {
+      expect(second.messageId).toBe(first.messageId);
+      const lines = fs.readFileSync(first.sessionFile, "utf-8").trim().split("\n");
+      expect(lines.length).toBe(2);
+
+      const messageLine = JSON.parse(lines[1]);
+      expect(messageLine.message.provider).toBe("openclaw");
+      expect(messageLine.message.model).toBe("delivery-mirror");
+      expect(messageLine.message.content[0].text).toBe("ACP_CURSOR_SMOKE_OK");
+    }
+  });
+
   it("dedupes against the latest assistant even when a large user entry follows it", async () => {
     writeTranscriptStore();
 
