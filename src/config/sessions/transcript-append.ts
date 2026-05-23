@@ -11,6 +11,7 @@ import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { redactSecrets } from "../../logging/redact.js";
 import { resolveOwnedSessionTranscriptWriteLockRunner } from "./transcript-write-context.js";
+import { streamSessionTranscriptLinesReverse } from "./transcript-stream.js";
 
 const TRANSCRIPT_APPEND_SCAN_CHUNK_BYTES = 64 * 1024;
 const SESSION_MANAGER_APPEND_MAX_BYTES = 8 * 1024 * 1024;
@@ -250,6 +251,12 @@ type AppendSessionTranscriptMessageParams<TMessage = unknown> = {
   config?: OpenClawConfig;
 };
 
+type AppendSessionTranscriptMessageResult<TMessage = unknown> = {
+  messageId: string;
+  message: TMessage;
+  appended: boolean;
+};
+
 function isTranscriptAgentMessage(value: unknown): value is AgentMessage {
   return (
     typeof value === "object" &&
@@ -259,9 +266,90 @@ function isTranscriptAgentMessage(value: unknown): value is AgentMessage {
   );
 }
 
+function isDeliveryMirrorAssistantMessage(value: unknown): boolean {
+  if (!isTranscriptAgentMessage(value)) {
+    return false;
+  }
+  return (
+    value.role === "assistant" &&
+    (value as { provider?: unknown }).provider === "openclaw" &&
+    (value as { model?: unknown }).model === "delivery-mirror"
+  );
+}
+
+function extractTranscriptMessageText(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const content = (value as { content?: unknown }).content;
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const parts = content
+    .filter(
+      (
+        part,
+      ): part is {
+        type: "text";
+        text: string;
+      } =>
+        typeof part === "object" &&
+        part !== null &&
+        (part as { type?: unknown }).type === "text" &&
+        typeof (part as { text?: unknown }).text === "string" &&
+        (part as { text: string }).text.trim().length > 0,
+    )
+    .map((part) => part.text.trim());
+  return parts.length > 0 ? parts.join("\n").trim() : null;
+}
+
+async function findLatestEquivalentAssistantEntry<TMessage>(
+  transcriptPath: string,
+  message: TMessage,
+  config?: OpenClawConfig,
+): Promise<AppendSessionTranscriptMessageResult<TMessage> | undefined> {
+  const expectedText = extractTranscriptMessageText(message);
+  if (!expectedText) {
+    return undefined;
+  }
+
+  for await (const line of streamSessionTranscriptLinesReverse(transcriptPath)) {
+    try {
+      const parsed = JSON.parse(line) as {
+        id?: unknown;
+        message?: unknown;
+      };
+      const candidate = parsed.message;
+      if (!isTranscriptAgentMessage(candidate) || candidate.role !== "assistant") {
+        continue;
+      }
+      const redactedCandidate = redactTranscriptMessage(candidate, config);
+      const candidateText = extractTranscriptMessageText(redactedCandidate);
+      if (candidateText !== expectedText) {
+        return undefined;
+      }
+      if (typeof parsed.id !== "string" || !parsed.id) {
+        return undefined;
+      }
+      return {
+        messageId: parsed.id,
+        message: redactedCandidate as TMessage,
+        appended: false,
+      };
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 export async function appendSessionTranscriptMessage<TMessage>(
   params: AppendSessionTranscriptMessageParams<TMessage>,
-): Promise<{ messageId: string; message: TMessage }> {
+): Promise<AppendSessionTranscriptMessageResult<TMessage>> {
   const activeLockRunner = resolveOwnedSessionTranscriptWriteLockRunner({
     sessionFile: params.transcriptPath,
   });
@@ -298,9 +386,8 @@ async function withSessionTranscriptWriteLock<T>(
 
 async function appendSessionTranscriptMessageLocked<TMessage>(
   params: AppendSessionTranscriptMessageParams<TMessage>,
-): Promise<{ messageId: string; message: TMessage }> {
+): Promise<AppendSessionTranscriptMessageResult<TMessage>> {
   const now = params.now ?? Date.now();
-  const messageId = randomUUID();
   await ensureTranscriptHeader(params.transcriptPath, {
     ...(params.sessionId ? { sessionId: params.sessionId } : {}),
     ...(params.cwd ? { cwd: params.cwd } : {}),
@@ -329,6 +416,13 @@ async function appendSessionTranscriptMessageLocked<TMessage>(
       ? redactTranscriptMessage(params.message, params.config)
       : redactSecrets(params.message)
   ) as TMessage;
+  const existing = isDeliveryMirrorAssistantMessage(finalMessage)
+    ? await findLatestEquivalentAssistantEntry(params.transcriptPath, finalMessage, params.config)
+    : undefined;
+  if (existing) {
+    return existing;
+  }
+  const messageId = randomUUID();
   const entry = {
     type: "message",
     id: messageId,
@@ -337,11 +431,11 @@ async function appendSessionTranscriptMessageLocked<TMessage>(
     message: finalMessage,
   };
   await fs.appendFile(params.transcriptPath, `${JSON.stringify(entry)}\n`, "utf-8");
-  return { messageId, message: finalMessage };
+  return { messageId, message: finalMessage, appended: true };
 }
 
 export async function appendSessionTranscriptMessageInCriticalSection<TMessage>(
   params: AppendSessionTranscriptMessageParams<TMessage>,
-): Promise<{ messageId: string; message: TMessage }> {
+): Promise<AppendSessionTranscriptMessageResult<TMessage>> {
   return await appendSessionTranscriptMessageLocked(params);
 }

@@ -399,6 +399,60 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     }
   });
 
+  it("dedupes low-level delivery mirror appends against an existing mirror", async () => {
+    writeTranscriptStore();
+
+    const first = await appendAssistantMessageToSessionTranscript({
+      sessionKey,
+      text: "ACP_CURSOR_SMOKE_DEDUPE_OK",
+      storePath: fixture.storePath(),
+    });
+
+    expect(first.ok).toBe(true);
+    if (!first.ok) {
+      return;
+    }
+
+    const second = await appendSessionTranscriptMessage({
+      transcriptPath: first.sessionFile,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "ACP_CURSOR_SMOKE_DEDUPE_OK" }],
+        api: "openai-responses",
+        provider: "openclaw",
+        model: "delivery-mirror",
+        usage: {
+          input: 0,
+          output: 0,
+          total: 0,
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          cache: {
+            read: 0,
+            write: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0,
+          },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      },
+    });
+
+    expect(second.messageId).toBe(first.messageId);
+    expect(second.appended).toBe(false);
+
+    const lines = fs.readFileSync(first.sessionFile, "utf-8").trim().split("\n");
+    expect(lines.length).toBe(2);
+
+    const messageLine = JSON.parse(lines[1]);
+    expect(messageLine.message.provider).toBe("openclaw");
+    expect(messageLine.message.model).toBe("delivery-mirror");
+    expect(messageLine.message.content[0].text).toBe("ACP_CURSOR_SMOKE_DEDUPE_OK");
+  });
+
   it("dedupes against the latest assistant even when a large user entry follows it", async () => {
     writeTranscriptStore();
 
