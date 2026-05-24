@@ -55,6 +55,7 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Gateway/agents: keep long-lived lazy agent, Codex harness, heartbeat, cron, and gateway runtime modules on stable dist names and rebuild when critical runtime artifacts are missing, preventing live gateways from failing mid-turn after a local rebuild.
 - WebChat: summarize internal message-tool source replies so tool cards no longer duplicate the visible reply body. (#84773) Thanks @jason-allen-oneal.
 - Gateway: preserve deferred lifecycle-error cleanup across later non-terminal events so provider timeouts can persist failed session state instead of leaving sessions stuck running. (#85256, fixes #63819) Thanks @samzong.
 - Agents/subagents: report tool-only child progress during timeout summaries instead of showing no visible output.

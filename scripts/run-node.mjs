@@ -74,6 +74,28 @@ const resolvePrivateQaRequiredDistEntries = (distRoot) => [
   path.join(distRoot, "plugin-sdk", "qa-lab.js"),
   path.join(distRoot, "plugin-sdk", "qa-runtime.js"),
 ];
+const requiredStableRuntimeDistEntries = [
+  "agent-runner.runtime.js",
+  "entry.js",
+  "heartbeat-runner.runtime.js",
+  "plugin-sdk/channel-targets.js",
+  "plugin-sdk/state-paths.js",
+  "plugin-sdk/string-coerce-runtime.js",
+  "plugins/hook-runner-global.js",
+  "reply-payloads-dedupe.runtime.js",
+  "run-execution.runtime.js",
+  "run-runtime-plugins.runtime.js",
+  "server.impl.js",
+  "server-methods.js",
+  "server-plugin-bootstrap.js",
+  "server-runtime-services.js",
+  "server-runtime-subscriptions.js",
+  "server-ws-runtime.js",
+  "extensions/codex/src/app-server/run-attempt.js",
+  "extensions/codex/src/app-server/shared-client.js",
+];
+const resolveRequiredStableRuntimeDistEntries = (distRoot) =>
+  requiredStableRuntimeDistEntries.map((entry) => path.join(distRoot, entry));
 const shouldIncludePrivateQaBundledOutputs = (env = process.env) =>
   env.OPENCLAW_BUILD_PRIVATE_QA === "1";
 
@@ -331,6 +353,11 @@ const hasMissingBuiltBundledPluginRuntimeEntryOutput = (deps) => {
     });
 };
 
+const hasMissingRequiredStableRuntimeDistEntry = (deps) =>
+  resolveRequiredStableRuntimeDistEntries(deps.distRoot).some(
+    (filePath) => statMtime(filePath, deps.fs) == null,
+  );
+
 const listBuiltBundledPluginEntries = (deps) => {
   return collectRunNodeBundledPluginBuildEntries(deps)
     .filter(({ id }) => shouldRequireBundledPluginRuntimeOutput(id, deps.env))
@@ -485,6 +512,9 @@ export const resolveBuildRequirement = (deps) => {
   if (statMtime(deps.distEntry, deps.fs) == null) {
     return { shouldBuild: true, reason: "missing_dist_entry" };
   }
+  if (hasMissingRequiredStableRuntimeDistEntry(deps)) {
+    return { shouldBuild: true, reason: "missing_stable_runtime_dist_entry" };
+  }
 
   for (const filePath of deps.configFiles) {
     const mtime = statMtime(filePath, deps.fs);
@@ -581,6 +611,7 @@ const BUILD_REASON_LABELS = {
   git_head_changed: "git head changed",
   dirty_watched_tree: "dirty watched source tree",
   missing_bundled_plugin_dist_entry: "bundled plugin dist entry missing",
+  missing_stable_runtime_dist_entry: "stable runtime dist entry missing",
   source_mtime_newer: "source mtime newer than build stamp",
   missing_private_qa_dist: "private QA dist entry missing",
   clean: "clean",

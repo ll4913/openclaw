@@ -57,7 +57,7 @@ describe("resolveMcpTransportConfig", () => {
       },
       cwd: undefined,
       description: "node",
-      connectionTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
     });
     expect(logWarn).toHaveBeenCalledWith(
       'bundle-mcp: server "probe": env "NODE_OPTIONS" is blocked for stdio startup safety and was ignored.',
@@ -87,7 +87,7 @@ describe("resolveMcpTransportConfig", () => {
       env: {},
       cwd: undefined,
       description: "node",
-      connectionTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
     });
   });
 
@@ -122,7 +122,7 @@ describe("resolveMcpTransportConfig", () => {
         "X-Count": "42",
       },
       description: "https://mcp.example.com/sse",
-      connectionTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
     });
   });
 
@@ -142,7 +142,7 @@ describe("resolveMcpTransportConfig", () => {
         NODE_OPTIONS: "allowed-header",
       },
       description: "https://mcp.example.com/sse",
-      connectionTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
     });
   });
 
@@ -158,7 +158,7 @@ describe("resolveMcpTransportConfig", () => {
       url: "https://mcp.example.com/http",
       headers: undefined,
       description: "https://mcp.example.com/http",
-      connectionTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
     });
   });
 
@@ -174,7 +174,7 @@ describe("resolveMcpTransportConfig", () => {
       url: "https://mcp.example.com/http",
       headers: undefined,
       description: "https://mcp.example.com/http",
-      connectionTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
     });
   });
 });

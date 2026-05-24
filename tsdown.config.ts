@@ -234,8 +234,19 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/models-config.runtime": "src/agents/models-config.runtime.ts",
     "agents/code-mode.worker": "src/agents/code-mode.worker.ts",
     "acp/control-plane/manager": "src/acp/control-plane/manager.ts",
+    "agent-runner.runtime": "src/auto-reply/reply/agent-runner.runtime.ts",
     "cli/gateway-lifecycle.runtime": "src/cli/gateway-cli/lifecycle.runtime.ts",
+    "run-execution.runtime": "src/cron/isolated-agent/run-execution.runtime.ts",
+    "run-runtime-plugins.runtime": "src/cron/isolated-agent/run-runtime-plugins.runtime.ts",
+    "server.impl": "src/gateway/server.impl.ts",
+    "server-methods": "src/gateway/server-methods.ts",
+    "server-plugin-bootstrap": "src/gateway/server-plugin-bootstrap.ts",
+    "server-runtime-services": "src/gateway/server-runtime-services.ts",
+    "server-runtime-subscriptions": "src/gateway/server-runtime-subscriptions.ts",
+    "server-ws-runtime": "src/gateway/server-ws-runtime.ts",
+    "heartbeat-runner.runtime": "src/infra/heartbeat-runner.runtime.ts",
     "provider-dispatcher.runtime": "src/auto-reply/reply/provider-dispatcher.runtime.ts",
+    "reply-payloads-dedupe.runtime": "src/auto-reply/reply/reply-payloads-dedupe.runtime.ts",
     "server-close.runtime": "src/gateway/server-close.runtime.ts",
     "plugins/hook-runner-global": "src/plugins/hook-runner-global.ts",
     "plugins/memory-state": "src/plugins/memory-state.ts",
@@ -267,6 +278,10 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugins/runtime/index": "src/plugins/runtime/index.ts",
     "llm-slug-generator": "src/hooks/llm-slug-generator.ts",
     "mcp/plugin-tools-serve": "src/mcp/plugin-tools-serve.ts",
+    "extensions/codex/src/app-server/run-attempt":
+      "extensions/codex/src/app-server/run-attempt.ts",
+    "extensions/codex/src/app-server/shared-client":
+      "extensions/codex/src/app-server/shared-client.ts",
   };
 }
 

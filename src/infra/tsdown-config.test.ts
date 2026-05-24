@@ -91,7 +91,17 @@ describe("tsdown config", () => {
       "agents/auth-profiles.runtime",
       "agents/model-catalog.runtime",
       "agents/models-config.runtime",
+      "agent-runner.runtime",
       "cli/gateway-lifecycle.runtime",
+      "run-execution.runtime",
+      "run-runtime-plugins.runtime",
+      "server.impl",
+      "server-methods",
+      "server-plugin-bootstrap",
+      "server-runtime-services",
+      "server-runtime-subscriptions",
+      "server-ws-runtime",
+      "heartbeat-runner.runtime",
       "plugins/memory-state",
       "subagent-registry.runtime",
       "task-registry-control.runtime",
@@ -101,11 +111,14 @@ describe("tsdown config", () => {
       "index",
       "commands/status.summary.runtime",
       "provider-dispatcher.runtime",
+      "reply-payloads-dedupe.runtime",
       "plugins/hook-runner-global",
       "plugins/provider-discovery.runtime",
       "plugins/provider-runtime.runtime",
       "plugins/runtime/index",
       "web-fetch/runtime",
+      "extensions/codex/src/app-server/run-attempt",
+      "extensions/codex/src/app-server/shared-client",
       "plugin-sdk/compat",
       "plugin-sdk/index",
       bundledEntry("active-memory"),
@@ -146,6 +159,36 @@ describe("tsdown config", () => {
 
     expect(entrySources(distGraph)["plugins/hook-runner-global"]).toBe(
       "src/plugins/hook-runner-global.ts",
+    );
+  });
+
+  it("keeps long-lived gateway and agent lazy runtimes behind stable dist entries", () => {
+    const distGraph = requireUnifiedDistGraph();
+    const entries = entrySources(distGraph);
+
+    expect(entries["agent-runner.runtime"]).toBe(
+      "src/auto-reply/reply/agent-runner.runtime.ts",
+    );
+    expect(entries["reply-payloads-dedupe.runtime"]).toBe(
+      "src/auto-reply/reply/reply-payloads-dedupe.runtime.ts",
+    );
+    expect(entries["heartbeat-runner.runtime"]).toBe("src/infra/heartbeat-runner.runtime.ts");
+    expect(entries["run-runtime-plugins.runtime"]).toBe(
+      "src/cron/isolated-agent/run-runtime-plugins.runtime.ts",
+    );
+    expect(entries["server.impl"]).toBe("src/gateway/server.impl.ts");
+    expect(entries["server-methods"]).toBe("src/gateway/server-methods.ts");
+  });
+
+  it("keeps Codex harness app-server lazy runtimes behind stable dist entries", () => {
+    const distGraph = requireUnifiedDistGraph();
+    const entries = entrySources(distGraph);
+
+    expect(entries["extensions/codex/src/app-server/run-attempt"]).toBe(
+      "extensions/codex/src/app-server/run-attempt.ts",
+    );
+    expect(entries["extensions/codex/src/app-server/shared-client"]).toBe(
+      "extensions/codex/src/app-server/shared-client.ts",
     );
   });
 

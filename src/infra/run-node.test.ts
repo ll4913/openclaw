@@ -39,6 +39,24 @@ const DIST_STABLE_ROOT_RUNTIME_SOURCE_ALT = "dist/model-catalog.runtime-EfGh5678
 const DIST_STABLE_ROOT_RUNTIME_ALIAS = "dist/model-catalog.runtime.js";
 const DIST_LEGACY_ROOT_RUNTIME_TARGET = "dist/abort.runtime.js";
 const DIST_LEGACY_ROOT_RUNTIME_COMPAT = "dist/abort.runtime-DX6vo4yJ.js";
+const DIST_LEGACY_HOOK_RUNNER_GLOBAL_COMPAT = "dist/hook-runner-global-B8rMIo8I.js";
+const DIST_AGENT_RUNNER_RUNTIME = "dist/agent-runner.runtime.js";
+const DIST_HEARTBEAT_RUNNER_RUNTIME = "dist/heartbeat-runner.runtime.js";
+const DIST_PLUGIN_SDK_CHANNEL_TARGETS = "dist/plugin-sdk/channel-targets.js";
+const DIST_PLUGIN_SDK_STATE_PATHS = "dist/plugin-sdk/state-paths.js";
+const DIST_PLUGIN_SDK_STRING_COERCE_RUNTIME = "dist/plugin-sdk/string-coerce-runtime.js";
+const DIST_HOOK_RUNNER_GLOBAL = "dist/plugins/hook-runner-global.js";
+const DIST_REPLY_PAYLOADS_DEDUPE_RUNTIME = "dist/reply-payloads-dedupe.runtime.js";
+const DIST_RUN_EXECUTION_RUNTIME = "dist/run-execution.runtime.js";
+const DIST_RUN_RUNTIME_PLUGINS_RUNTIME = "dist/run-runtime-plugins.runtime.js";
+const DIST_SERVER_IMPL = "dist/server.impl.js";
+const DIST_SERVER_METHODS = "dist/server-methods.js";
+const DIST_SERVER_PLUGIN_BOOTSTRAP = "dist/server-plugin-bootstrap.js";
+const DIST_SERVER_RUNTIME_SERVICES = "dist/server-runtime-services.js";
+const DIST_SERVER_RUNTIME_SUBSCRIPTIONS = "dist/server-runtime-subscriptions.js";
+const DIST_SERVER_WS_RUNTIME = "dist/server-ws-runtime.js";
+const DIST_CODEX_RUN_ATTEMPT = "dist/extensions/codex/src/app-server/run-attempt.js";
+const DIST_CODEX_SHARED_CLIENT = "dist/extensions/codex/src/app-server/shared-client.js";
 const QA_LAB_PLUGIN_SDK_ENTRY = "dist/plugin-sdk/qa-lab.js";
 const QA_RUNTIME_PLUGIN_SDK_ENTRY = "dist/plugin-sdk/qa-runtime.js";
 const EXTENSION_INDEX = bundledPluginFile("demo", "index.ts");
@@ -59,23 +77,54 @@ const DIST_RUNTIME_EXTENSION_SKILL = "dist-runtime/extensions/demo/skills/SKILL.
 const DIST_OPENCLAW_ALIAS_PACKAGE = "dist/extensions/node_modules/openclaw/package.json";
 const DIST_OPENCLAW_ALIAS_PLUGIN_SDK_INDEX =
   "dist/extensions/node_modules/openclaw/plugin-sdk/index.js";
+const DIST_OPENCLAW_ALIAS_PLUGIN_SDK_CHANNEL_TARGETS =
+  "dist/extensions/node_modules/openclaw/plugin-sdk/channel-targets.js";
+const DIST_OPENCLAW_ALIAS_PLUGIN_SDK_STATE_PATHS =
+  "dist/extensions/node_modules/openclaw/plugin-sdk/state-paths.js";
+const DIST_OPENCLAW_ALIAS_PLUGIN_SDK_STRING_COERCE_RUNTIME =
+  "dist/extensions/node_modules/openclaw/plugin-sdk/string-coerce-runtime.js";
 const DIFFS_PACKAGE = "extensions/diffs/package.json";
 const DIFFS_VIEWER_RUNTIME_SOURCE = "extensions/diffs/assets/viewer-runtime.js";
 const DIST_DIFFS_VIEWER_RUNTIME = "dist/extensions/diffs/assets/viewer-runtime.js";
 const DIST_RUNTIME_DIFFS_VIEWER_RUNTIME = "dist-runtime/extensions/diffs/assets/viewer-runtime.js";
 const DIST_EXTENSION_MANIFEST = bundledDistPluginFile("demo", "openclaw.plugin.json");
 const DIST_EXTENSION_PACKAGE = bundledDistPluginFile("demo", "package.json");
+const DIST_RUNTIME_CODEX_RUN_ATTEMPT =
+  "dist-runtime/extensions/codex/src/app-server/run-attempt.js";
+const DIST_RUNTIME_CODEX_SHARED_CLIENT =
+  "dist-runtime/extensions/codex/src/app-server/shared-client.js";
 
 const OLD_TIME = new Date("2026-03-13T10:00:00.000Z");
 const BUILD_TIME = new Date("2026-03-13T12:00:00.000Z");
 const NEW_TIME = new Date("2026-03-13T12:00:01.000Z");
 
-const BASE_PROJECT_FILES = {
+const REQUIRED_STABLE_RUNTIME_DIST_FILES = [
+  DIST_AGENT_RUNNER_RUNTIME,
+  DIST_HEARTBEAT_RUNNER_RUNTIME,
+  DIST_PLUGIN_SDK_CHANNEL_TARGETS,
+  DIST_PLUGIN_SDK_STATE_PATHS,
+  DIST_PLUGIN_SDK_STRING_COERCE_RUNTIME,
+  DIST_HOOK_RUNNER_GLOBAL,
+  DIST_REPLY_PAYLOADS_DEDUPE_RUNTIME,
+  DIST_RUN_EXECUTION_RUNTIME,
+  DIST_RUN_RUNTIME_PLUGINS_RUNTIME,
+  DIST_SERVER_IMPL,
+  DIST_SERVER_METHODS,
+  DIST_SERVER_PLUGIN_BOOTSTRAP,
+  DIST_SERVER_RUNTIME_SERVICES,
+  DIST_SERVER_RUNTIME_SUBSCRIPTIONS,
+  DIST_SERVER_WS_RUNTIME,
+  DIST_CODEX_RUN_ATTEMPT,
+  DIST_CODEX_SHARED_CLIENT,
+] as const;
+
+const BASE_PROJECT_FILES: Record<string, string> = {
   [ROOT_TSCONFIG]: "{}\n",
   [ROOT_PACKAGE]: '{"name":"openclaw-test"}\n',
   [DIST_ENTRY]: "console.log('built');\n",
   [BUILD_STAMP]: '{"head":"abc123"}\n',
-} as const;
+  ...Object.fromEntries(REQUIRED_STABLE_RUNTIME_DIST_FILES.map((file) => [file, "export {};\n"])),
+};
 
 function createExitedProcess(code: number | null, signal: string | null = null) {
   return {
@@ -138,8 +187,15 @@ async function writeRuntimePostBuildScaffold(tmp: string): Promise<void> {
     [DIST_CHANNEL_CATALOG]: '{"entries":[]}\n',
     [DIST_LEGACY_CLI_EXIT_COMPAT]: "export function hasMemoryRuntime() { return false; }\n",
     [DIST_LEGACY_CLI_EXIT_COMPAT_ALT]: "export function hasMemoryRuntime() { return false; }\n",
+    [DIST_LEGACY_HOOK_RUNNER_GLOBAL_COMPAT]:
+      "export * from './plugins/hook-runner-global.js';\n",
     [DIST_OPENCLAW_ALIAS_PACKAGE]:
       '{"name":"openclaw","type":"module","exports":{"./plugin-sdk":"./plugin-sdk/index.js"}}\n',
+    [DIST_OPENCLAW_ALIAS_PLUGIN_SDK_CHANNEL_TARGETS]: "export {};\n",
+    [DIST_OPENCLAW_ALIAS_PLUGIN_SDK_STATE_PATHS]: "export {};\n",
+    [DIST_OPENCLAW_ALIAS_PLUGIN_SDK_STRING_COERCE_RUNTIME]: "export {};\n",
+    [DIST_RUNTIME_CODEX_RUN_ATTEMPT]: "export {};\n",
+    [DIST_RUNTIME_CODEX_SHARED_CLIENT]: "export {};\n",
   });
   await touchProjectFiles(
     tmp,
@@ -148,7 +204,13 @@ async function writeRuntimePostBuildScaffold(tmp: string): Promise<void> {
       DIST_CHANNEL_CATALOG,
       DIST_LEGACY_CLI_EXIT_COMPAT,
       DIST_LEGACY_CLI_EXIT_COMPAT_ALT,
+      DIST_LEGACY_HOOK_RUNNER_GLOBAL_COMPAT,
       DIST_OPENCLAW_ALIAS_PACKAGE,
+      DIST_OPENCLAW_ALIAS_PLUGIN_SDK_CHANNEL_TARGETS,
+      DIST_OPENCLAW_ALIAS_PLUGIN_SDK_STATE_PATHS,
+      DIST_OPENCLAW_ALIAS_PLUGIN_SDK_STRING_COERCE_RUNTIME,
+      DIST_RUNTIME_CODEX_RUN_ATTEMPT,
+      DIST_RUNTIME_CODEX_SHARED_CLIENT,
     ],
     BUILD_TIME,
   );
@@ -851,6 +913,32 @@ describe("run-node script", () => {
 
       expect(exitCode).toBe(0);
       expect(spawnCalls).toEqual([statusCommandSpawn()]);
+    });
+  });
+
+  it("rebuilds when a stable runtime dist artifact is missing", async () => {
+    await withTempDir({ prefix: "openclaw-run-node-" }, async (tmp) => {
+      await setupTrackedProject(tmp, {
+        files: {
+          [ROOT_SRC]: "export const value = 1;\n",
+        },
+        oldPaths: [ROOT_SRC, ROOT_TSCONFIG, ROOT_PACKAGE],
+        buildPaths: [DIST_ENTRY, BUILD_STAMP],
+      });
+      await fs.rm(resolvePath(tmp, DIST_RUN_RUNTIME_PLUGINS_RUNTIME));
+
+      const { spawnCalls, spawn, spawnSync } = createSpawnRecorder({
+        gitHead: "abc123\n",
+        gitStatus: "",
+      });
+      const exitCode = await runStatusCommand({ tmp, spawn, spawnSync });
+
+      expect(exitCode).toBe(0);
+      expect(spawnCalls).toEqual([
+        expectedBundledPluginAssetBuildSpawn(),
+        expectedBuildSpawn(),
+        statusCommandSpawn(),
+      ]);
     });
   });
 

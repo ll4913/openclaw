@@ -482,4 +482,88 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents", () => {
     expectNumberField(completedEvent, "durationMs");
     expect(events[1]).not.toHaveProperty("errorCategory");
   });
+
+  it("does not inspect growing partial snapshots when measuring stream bytes", async () => {
+    const chunk: Record<string, unknown> = {
+      type: "text_delta",
+      delta: "small increment",
+    };
+    Object.defineProperty(chunk, "partial", {
+      enumerable: true,
+      get() {
+        throw new Error("partial should not be measured");
+      },
+    });
+    async function* stream() {
+      yield chunk;
+    }
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+      (() => stream()) as unknown as StreamFn,
+      {
+        runId: "run-1",
+        provider: "anthropic",
+        model: "sonnet-4.6",
+        trace: createDiagnosticTraceContext(),
+        nextCallId: () => "call-partial",
+      },
+    );
+
+    const events = await collectModelCallEvents(async () => {
+      await drain(wrapped({} as never, {} as never, {} as never) as AsyncIterable<unknown>);
+    });
+
+    const completedEvent = getEvent(events, 1);
+    expect(completedEvent.type).toBe("model.call.completed");
+    expect(completedEvent.callId).toBe("call-partial");
+    expect(completedEvent.responseStreamBytes).toBe(
+      Buffer.byteLength(JSON.stringify({ type: "text_delta", delta: "small increment" }), "utf8"),
+    );
+  });
+
+  it("keeps stream byte measurement bounded for long replies with growing partial output", async () => {
+    const chunks: Record<string, unknown>[] = [];
+    const partial = { type: "message", content: [] as Array<{ type: "text"; text: string }> };
+    let partialAccessCount = 0;
+    for (let index = 0; index < 100; index += 1) {
+      partial.content.push({ type: "text", text: "x".repeat(10_000) });
+      const chunk: Record<string, unknown> = {
+        type: "text_delta",
+        delta: "x".repeat(32),
+        contentIndex: 0,
+      };
+      Object.defineProperty(chunk, "partial", {
+        enumerable: true,
+        get() {
+          partialAccessCount += 1;
+          return partial;
+        },
+      });
+      chunks.push(chunk);
+    }
+    async function* stream() {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    }
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+      (() => stream()) as unknown as StreamFn,
+      {
+        runId: "run-1",
+        provider: "openai",
+        model: "gpt-5.5",
+        trace: createDiagnosticTraceContext(),
+        nextCallId: () => "call-growing-partial",
+      },
+    );
+
+    const events = await collectModelCallEvents(async () => {
+      await drain(wrapped({} as never, {} as never, {} as never) as AsyncIterable<unknown>);
+    });
+
+    const completedEvent = getEvent(events, 1);
+    expect(completedEvent.type).toBe("model.call.completed");
+    expect(completedEvent.callId).toBe("call-growing-partial");
+    expect(partialAccessCount).toBe(0);
+    expect(completedEvent.responseStreamBytes).toBeLessThan(20_000);
+  });
 });

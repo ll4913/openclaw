@@ -72,22 +72,190 @@ type ModelCallObservationState = {
 };
 
 const MODEL_CALL_STREAM_RETURN_TIMEOUT_MS = 1000;
+const EXACT_JSON_BYTE_LENGTH_LIMIT = 64 * 1024;
+const ESTIMATED_JSON_MAX_DEPTH = 8;
+const ESTIMATED_JSON_MAX_OBJECT_KEYS = 256;
+const ESTIMATED_JSON_MAX_ARRAY_ITEMS = 512;
+const ESTIMATED_JSON_MAX_TOTAL_BYTES = 4 * 1024 * 1024;
 const TRACEPARENT_HEADER_NAME = "traceparent";
+const RESPONSE_CHUNK_IGNORED_KEYS = new Set(["partial"]);
 type ModelCallStreamOptions = Parameters<StreamFn>[2];
 
-function utf8JsonByteLength(value: unknown): number | undefined {
+type JsonByteEstimate = {
+  bytes: number;
+  truncated: boolean;
+};
+
+type JsonByteEstimateOptions = {
+  skipKeys?: ReadonlySet<string>;
+};
+
+function quotedStringUtf8JsonByteLength(value: string): number {
+  if (value.length <= EXACT_JSON_BYTE_LENGTH_LIMIT) {
+    try {
+      return Buffer.byteLength(JSON.stringify(value), "utf8");
+    } catch {
+      return Buffer.byteLength(value, "utf8") + 2;
+    }
+  }
+  let extraEscapes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      extraEscapes += 1;
+    } else if (code < 0x20) {
+      extraEscapes += 5;
+    }
+  }
+  return Buffer.byteLength(value, "utf8") + extraEscapes + 2;
+}
+
+function estimateJsonByteLength(
+  value: unknown,
+  options: JsonByteEstimateOptions = {},
+): JsonByteEstimate {
+  const state = {
+    seen: new WeakSet<object>(),
+    bytes: 0,
+    truncated: false,
+  };
+  const addBytes = (bytes: number) => {
+    state.bytes += bytes;
+    if (state.bytes > ESTIMATED_JSON_MAX_TOTAL_BYTES) {
+      state.truncated = true;
+    }
+  };
+  const addString = (text: string) => addBytes(quotedStringUtf8JsonByteLength(text));
+
+  const visit = (current: unknown, depth: number): void => {
+    if (state.truncated) {
+      return;
+    }
+    if (current === null) {
+      addBytes(4);
+      return;
+    }
+    switch (typeof current) {
+      case "string":
+        addString(current);
+        return;
+      case "number":
+        addBytes(Number.isFinite(current) ? String(current).length : 4);
+        return;
+      case "boolean":
+        addBytes(current ? 4 : 5);
+        return;
+      case "bigint":
+        addString(String(current));
+        return;
+      case "undefined":
+      case "function":
+      case "symbol":
+        addBytes(0);
+        return;
+      default:
+        break;
+    }
+
+    if (!current || typeof current !== "object") {
+      addBytes(0);
+      return;
+    }
+    if (depth >= ESTIMATED_JSON_MAX_DEPTH) {
+      state.truncated = true;
+      addString("[truncated]");
+      return;
+    }
+    if (state.seen.has(current)) {
+      addString("[circular]");
+      return;
+    }
+    state.seen.add(current);
+
+    if (Array.isArray(current)) {
+      addBytes(1);
+      const maxItems = Math.min(current.length, ESTIMATED_JSON_MAX_ARRAY_ITEMS);
+      for (let index = 0; index < maxItems; index += 1) {
+        if (index > 0) {
+          addBytes(1);
+        }
+        const item = current[index];
+        if (item === undefined || typeof item === "function" || typeof item === "symbol") {
+          addBytes(4);
+        } else {
+          visit(item, depth + 1);
+        }
+        if (state.truncated) {
+          break;
+        }
+      }
+      if (current.length > maxItems) {
+        state.truncated = true;
+      }
+      addBytes(1);
+      state.seen.delete(current);
+      return;
+    }
+
+    addBytes(1);
+    let emitted = 0;
+    let visited = 0;
+    for (const key of Object.keys(current as Record<string, unknown>)) {
+      if (options.skipKeys?.has(key)) {
+        continue;
+      }
+      visited += 1;
+      if (visited > ESTIMATED_JSON_MAX_OBJECT_KEYS) {
+        state.truncated = true;
+        break;
+      }
+      const child = (current as Record<string, unknown>)[key];
+      if (child === undefined || typeof child === "function" || typeof child === "symbol") {
+        continue;
+      }
+      if (emitted > 0) {
+        addBytes(1);
+      }
+      addString(key);
+      addBytes(1);
+      visit(child, depth + 1);
+      emitted += 1;
+      if (state.truncated) {
+        break;
+      }
+    }
+    addBytes(1);
+    state.seen.delete(current);
+  };
+
+  visit(value, 0);
+  return { bytes: state.bytes, truncated: state.truncated };
+}
+
+function jsonByteLength(value: unknown, options?: JsonByteEstimateOptions): number | undefined {
+  const estimate = estimateJsonByteLength(value, options);
+  if (options?.skipKeys || estimate.truncated || estimate.bytes > EXACT_JSON_BYTE_LENGTH_LIMIT) {
+    return estimate.bytes;
+  }
   try {
     return Buffer.byteLength(JSON.stringify(value), "utf8");
   } catch {
-    return undefined;
+    return estimate.bytes;
   }
 }
 
 function assignRequestPayloadBytes(state: ModelCallObservationState, payload: unknown): void {
-  const bytes = utf8JsonByteLength(payload);
+  const bytes = jsonByteLength(payload);
   if (bytes !== undefined) {
     state.requestPayloadBytes = bytes;
   }
+}
+
+function responseChunkByteLength(chunk: unknown): number | undefined {
+  if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+    return jsonByteLength(chunk);
+  }
+  return jsonByteLength(chunk, { skipKeys: RESPONSE_CHUNK_IGNORED_KEYS });
 }
 
 function observeResponseChunk(
@@ -96,7 +264,7 @@ function observeResponseChunk(
   chunk: unknown,
 ): void {
   state.timeToFirstByteMs ??= Math.max(0, Date.now() - startedAt);
-  const bytes = utf8JsonByteLength(chunk);
+  const bytes = responseChunkByteLength(chunk);
   if (bytes !== undefined) {
     state.responseStreamBytes += bytes;
   }

@@ -35,7 +35,7 @@ type ResolvedHttpMcpTransportConfig = ResolvedBaseMcpTransportConfig & {
 
 type ResolvedMcpTransportConfig = ResolvedStdioMcpTransportConfig | ResolvedHttpMcpTransportConfig;
 
-const DEFAULT_CONNECTION_TIMEOUT_MS = 30_000;
+const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 
 function getConnectionTimeoutMs(rawServer: unknown): number {
   if (

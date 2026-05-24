@@ -223,6 +223,11 @@ export function createSessionMcpRuntime(params: {
       const servers: Record<string, McpServerCatalog> = {};
       const tools: McpCatalogTool[] = [];
       const usedServerNames = new Set<string>();
+      const serverPlans: Array<{
+        serverName: string;
+        safeServerName: string;
+        resolved: NonNullable<ReturnType<typeof resolveMcpTransport>>;
+      }> = [];
 
       try {
         for (const [serverName, rawServer] of Object.entries(loaded.mcpServers)) {
@@ -237,64 +242,79 @@ export function createSessionMcpRuntime(params: {
               `bundle-mcp: server key "${serverName}" registered as "${safeServerName}" for provider-safe tool names.`,
             );
           }
-
-          const client = new Client(
-            {
-              name: "openclaw-bundle-mcp",
-              version: "0.0.0",
-            },
-            {
-              jsonSchemaValidator: createBundleMcpJsonSchemaValidator(),
-            },
-          );
-          const session: BundleMcpSession = {
-            serverName,
-            client,
-            transport: resolved.transport,
-            transportType: resolved.transportType,
-            detachStderr: resolved.detachStderr,
-          };
-          sessions.set(serverName, session);
-
-          try {
-            failIfDisposed();
-            await connectWithTimeout(client, resolved.transport, resolved.connectionTimeoutMs);
-            failIfDisposed();
-            const listedTools = await listAllTools(client);
-            failIfDisposed();
-            servers[serverName] = {
-              serverName,
-              launchSummary: resolved.description,
-              toolCount: listedTools.length,
-            };
-            for (const tool of listedTools) {
-              const toolName = tool.name.trim();
-              if (!toolName) {
-                continue;
-              }
-              tools.push({
-                serverName,
-                safeServerName,
-                toolName,
-                title: tool.title,
-                description: normalizeOptionalString(tool.description),
-                inputSchema: tool.inputSchema,
-                fallbackDescription: `Provided by bundle MCP server "${serverName}" (${resolved.description}).`,
-              });
-            }
-          } catch (error) {
-            if (!disposed) {
-              logWarn(
-                `bundle-mcp: failed to start server "${serverName}" (${resolved.description}): ${redactErrorUrls(error)}`,
-              );
-            }
-            await disposeSession(session);
-            sessions.delete(serverName);
-            failIfDisposed();
-          }
+          serverPlans.push({ serverName, safeServerName, resolved });
         }
 
+        const startedServers = await Promise.all(
+          serverPlans.map(async ({ serverName, safeServerName, resolved }) => {
+            const client = new Client(
+              {
+                name: "openclaw-bundle-mcp",
+                version: "0.0.0",
+              },
+              {
+                jsonSchemaValidator: createBundleMcpJsonSchemaValidator(),
+              },
+            );
+            const session: BundleMcpSession = {
+              serverName,
+              client,
+              transport: resolved.transport,
+              transportType: resolved.transportType,
+              detachStderr: resolved.detachStderr,
+            };
+            sessions.set(serverName, session);
+
+            try {
+              failIfDisposed();
+              await connectWithTimeout(client, resolved.transport, resolved.connectionTimeoutMs);
+              failIfDisposed();
+              const listedTools = await listAllTools(client);
+              failIfDisposed();
+              const server: McpServerCatalog = {
+                serverName,
+                launchSummary: resolved.description,
+                toolCount: listedTools.length,
+              };
+              const serverTools: McpCatalogTool[] = [];
+              for (const tool of listedTools) {
+                const toolName = tool.name.trim();
+                if (!toolName) {
+                  continue;
+                }
+                serverTools.push({
+                  serverName,
+                  safeServerName,
+                  toolName,
+                  title: tool.title,
+                  description: normalizeOptionalString(tool.description),
+                  inputSchema: tool.inputSchema,
+                  fallbackDescription: `Provided by bundle MCP server "${serverName}" (${resolved.description}).`,
+                });
+              }
+              return { server, tools: serverTools };
+            } catch (error) {
+              if (!disposed) {
+                logWarn(
+                  `bundle-mcp: failed to start server "${serverName}" (${resolved.description}): ${redactErrorUrls(error)}`,
+                );
+              }
+              await disposeSession(session);
+              sessions.delete(serverName);
+              failIfDisposed();
+              return undefined;
+            }
+          }),
+        );
+
         failIfDisposed();
+        for (const started of startedServers) {
+          if (!started) {
+            continue;
+          }
+          servers[started.server.serverName] = started.server;
+          tools.push(...started.tools);
+        }
         return {
           version: 1,
           generatedAt: Date.now(),
