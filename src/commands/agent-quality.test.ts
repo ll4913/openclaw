@@ -66,6 +66,51 @@ describe("agent quality gate", () => {
     ]);
   });
 
+  it("runs gateway, health, and channel probes sequentially to avoid probe fanout", async () => {
+    const calls: string[] = [];
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", logs: false },
+      healthyDeps({
+        getGatewayStatus: async () => {
+          calls.push("gateway:start");
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          calls.push("gateway:end");
+          return {
+            ok: true,
+            warnings: [],
+            service: { runtime: { status: "running", pid: 1234 } },
+            rpc: { ok: true },
+            health: { healthy: true },
+            port: { listeners: [{ pid: 1234, command: "node" }] },
+          };
+        },
+        getHealth: async () => {
+          calls.push("health");
+          return { eventLoop: { degraded: false, reasons: [] } };
+        },
+        getChannelsStatus: async () => {
+          calls.push("channels");
+          return {
+            channelAccounts: {
+              telegram: [
+                {
+                  accountId: "main",
+                  configured: true,
+                  enabled: true,
+                  running: true,
+                  connected: true,
+                },
+              ],
+            },
+          };
+        },
+      }),
+    );
+
+    expect(report.overall).toBe("pass");
+    expect(calls).toEqual(["gateway:start", "gateway:end", "health", "channels"]);
+  });
+
   it("fails when an enabled Telegram account is disconnected or stopped", async () => {
     const report = await runAgentQualityGate(
       { repoRoot: "/repo" },
@@ -383,8 +428,8 @@ describe("agent quality gate", () => {
     expect(artifactCheck?.details).toContain("stale_reference: /repo/dist/runtime-rebuilt.js");
     expect(logCheck?.status).toBe("warn");
     expect(logCheck?.summary).toContain("recoverable/resolved");
-    expect(report.likelyCauses.map((cause) => cause.id)).toContain("dist_artifact_missing");
-    expect(report.runbook.map((item) => item.id)).toContain("dist_artifact_missing");
+    expect(report.likelyCauses.map((cause) => cause.id)).not.toContain("dist_artifact_missing");
+    expect(report.runbook.map((item) => item.id)).not.toContain("dist_artifact_missing");
   });
 
   it("keeps old missing dist module log entries historical outside the active window", async () => {

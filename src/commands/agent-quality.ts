@@ -1,14 +1,13 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { isAcpTransientTransportErrorText } from "../acp/runtime/transport-errors.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { type OutputRuntimeEnv, type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
-import { channelsStatusCommand } from "./channels/status.js";
-import { gatewayStatusCommand } from "./gateway-status.js";
-import { healthCommand } from "./health.js";
+import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 
 export type AgentQualityStatus = "pass" | "warn" | "fail";
 
@@ -82,27 +81,16 @@ export type AgentQualityDeps = {
   pathExists?: (filePath: string) => Promise<boolean>;
 };
 
-type CaptureRuntime = OutputRuntimeEnv & {
-  jsonValues: unknown[];
-  logs: string[];
-  errors: string[];
-};
-
 const DEFAULT_SINCE_MINUTES = 15;
-const DEFAULT_TIMEOUT_MS = 3_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_LOG_DIR = "/tmp/openclaw";
 const LOG_SCAN_MAX_LINES = 5000;
 const CURRENT_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
 const ENV_FILES = [
   path.join(homedir(), ".openclaw/service-env/ai.openclaw.gateway.env"),
   path.join(homedir(), ".openclaw/.env"),
 ];
-
-class CaptureExitError extends Error {
-  constructor(readonly code: number) {
-    super(`exit ${code}`);
-  }
-}
 
 function findOpenClawRepoRoot(startDir: string): string | null {
   let current = path.resolve(startDir);
@@ -129,64 +117,49 @@ function resolveDefaultRepoRoot(): string {
   );
 }
 
-function createCaptureRuntime(): CaptureRuntime {
-  const runtime: CaptureRuntime = {
-    jsonValues: [],
-    logs: [],
-    errors: [],
-    log: (...args) => runtime.logs.push(args.map(String).join(" ")),
-    error: (...args) => runtime.errors.push(args.map(String).join(" ")),
-    writeStdout: (value) => runtime.logs.push(value),
-    writeJson: (value) => runtime.jsonValues.push(value),
-    exit: (code) => {
-      throw new CaptureExitError(code);
-    },
-  };
-  return runtime;
+function resolveOpenClawCliInvocation(): { command: string; argsPrefix: string[] } {
+  const entrypoint = process.argv[1];
+  if (entrypoint && (entrypoint.endsWith(".js") || entrypoint.includes("/dist/"))) {
+    return { command: process.execPath, argsPrefix: [entrypoint] };
+  }
+  return { command: "openclaw", argsPrefix: [] };
 }
 
-async function captureJsonCommand(
-  run: (runtime: CaptureRuntime) => Promise<void>,
-): Promise<unknown> {
-  const runtime = createCaptureRuntime();
-  try {
-    await run(runtime);
-  } catch (err) {
-    const hasJson =
-      runtime.jsonValues.length > 0 || runtime.logs.some((line) => line.trim().startsWith("{"));
-    if (!(err instanceof CaptureExitError) || !hasJson) {
-      throw err;
-    }
+async function runOpenClawJsonCommand(args: string[], timeoutMs: number): Promise<unknown> {
+  const invocation = resolveOpenClawCliInvocation();
+  const { stdout } = await execFileAsync(invocation.command, [...invocation.argsPrefix, ...args], {
+    env: process.env,
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: Math.max(timeoutMs + 10_000, 45_000),
+  });
+  const text = stdout.trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < start) {
+    throw new Error(`OpenClaw command did not return JSON: ${args.join(" ")}`);
   }
-  if (runtime.jsonValues.length > 0) {
-    return runtime.jsonValues.at(-1);
-  }
-  const jsonText = runtime.logs.find((line) => line.trim().startsWith("{"));
-  if (jsonText) {
-    return JSON.parse(jsonText);
-  }
-  return {
-    logs: runtime.logs,
-    errors: runtime.errors,
-  };
+  return JSON.parse(text.slice(start, end + 1));
 }
 
 async function defaultGetGatewayStatus(timeoutMs: number): Promise<unknown> {
-  return await captureJsonCommand(async (runtime) => {
-    await gatewayStatusCommand({ json: true, timeout: timeoutMs }, runtime);
-  });
+  return await runOpenClawJsonCommand(
+    ["gateway", "status", "--json", "--timeout", String(timeoutMs)],
+    timeoutMs,
+  );
 }
 
 async function defaultGetHealth(timeoutMs: number): Promise<unknown> {
-  return await captureJsonCommand(async (runtime) => {
-    await healthCommand({ json: true, timeoutMs }, runtime);
-  });
+  return await runOpenClawJsonCommand(
+    ["health", "--json", "--timeout", String(timeoutMs)],
+    timeoutMs,
+  );
 }
 
 async function defaultGetChannelsStatus(timeoutMs: number): Promise<unknown> {
-  return await captureJsonCommand(async (runtime) => {
-    await channelsStatusCommand({ json: true, timeout: String(timeoutMs) }, runtime);
-  });
+  return await runOpenClawJsonCommand(
+    ["channels", "status", "--json", "--timeout", String(timeoutMs)],
+    timeoutMs,
+  );
 }
 
 async function defaultFindLatestLogFile(): Promise<string | null> {
@@ -304,10 +277,8 @@ function classifyLikelyCauses(checks: AgentQualityCheck[]): AgentQualityCause[] 
       "warn",
       "A required runtime artifact is missing; rebuild before trusting gateway startup.",
       findEvidence(lines, [
-        /(?:missing_now|stale_reference): .*\/dist\//u,
+        /missing_now: .*\/dist\//u,
         /dist\/telegram-ingress-worker\.runtime\.js missing/u,
-        /Cannot find module .*\/dist\//u,
-        /dist\/plugin-sdk\//u,
       ]),
     ),
     buildCause(
@@ -376,7 +347,7 @@ function buildRunbook(causes: AgentQualityCause[]): AgentQualityRunbookSuggestio
     steps: [
       "Run `openclaw gateway status --deep --require-rpc` to capture listener, pid, config, and RPC state.",
       "If liveness passes but RPC/readiness fails, inspect event-loop and memory warnings before restarting.",
-      "Use `openclaw channels status --timeout 3000` as the delivery-readiness smoke after any fix.",
+      "Use `openclaw channels status --timeout 30000` as the delivery-readiness smoke after any fix.",
     ],
   });
   add({
@@ -885,11 +856,11 @@ function formatArtifactFinding(finding: ArtifactIntegrityFinding): string {
   return `${finding.state}: ${finding.filePath}`;
 }
 
-function artifactFailureSet(findings: ArtifactIntegrityFinding[]): Set<string> {
+function staleArtifactPathSet(findings: ArtifactIntegrityFinding[]): Set<string> {
   return new Set(
     findings
       .filter((finding) => finding.state === "stale_reference")
-      .flatMap((finding) => finding.evidence),
+      .map((finding) => finding.filePath),
   );
 }
 
@@ -977,9 +948,13 @@ async function analyzeLogs(params: {
     artifactReferences: scan.artifactReferences,
     historicalArtifactReferences: scan.historicalArtifactReferences,
   });
-  const staleArtifactFailures = artifactFailureSet(artifactFindings);
-  const activeFailures = scan.failures.filter((failure) => !staleArtifactFailures.has(failure));
-  const staleWarnings = scan.failures.filter((failure) => staleArtifactFailures.has(failure));
+  const staleArtifactPaths = staleArtifactPathSet(artifactFindings);
+  const isStaleArtifactFailure = (failure: string) => {
+    const filePath = extractMissingDistModulePath(failure);
+    return Boolean(filePath && staleArtifactPaths.has(filePath));
+  };
+  const activeFailures = scan.failures.filter((failure) => !isStaleArtifactFailure(failure));
+  const staleWarnings = scan.failures.filter(isStaleArtifactFailure);
   const warnings = [...scan.warnings, ...staleWarnings];
   const artifactCheck = buildArtifactIntegrityCheck(artifactFindings, params.sinceMinutes);
   if (activeFailures.length > 0) {
@@ -1160,36 +1135,12 @@ export async function runAgentQualityGate(
   const repoRoot = opts.repoRoot ?? resolveDefaultRepoRoot();
   const checks: AgentQualityCheck[] = [];
 
-  const gatewayStatusPromise = runWithTimeout({
+  const gatewayStatus = await runWithTimeout({
     name: "Gateway status probe",
     timeoutMs,
     run: () =>
       deps.getGatewayStatus ? deps.getGatewayStatus() : defaultGetGatewayStatus(timeoutMs),
   }).catch((err) => err);
-  const healthCheckPromise = runChecked(
-    "health",
-    "Runtime Health",
-    async () =>
-      analyzeHealth(deps.getHealth ? await deps.getHealth() : await defaultGetHealth(timeoutMs)),
-    timeoutMs,
-  );
-  const channelsCheckPromise = runChecked(
-    "telegram-channels",
-    "Telegram Delivery Readiness",
-    async () =>
-      analyzeChannels(
-        deps.getChannelsStatus
-          ? await deps.getChannelsStatus()
-          : await defaultGetChannelsStatus(timeoutMs),
-      ),
-    timeoutMs,
-  );
-
-  const [gatewayStatus, healthCheck, channelsCheck] = await Promise.all([
-    gatewayStatusPromise,
-    healthCheckPromise,
-    channelsCheckPromise,
-  ]);
 
   if (gatewayStatus instanceof Error) {
     checks.push(
@@ -1219,6 +1170,25 @@ export async function runAgentQualityGate(
     );
     checks.push(analyzeGatewayReadiness(gatewayStatus));
   }
+
+  const healthCheck = await runChecked(
+    "health",
+    "Runtime Health",
+    async () =>
+      analyzeHealth(deps.getHealth ? await deps.getHealth() : await defaultGetHealth(timeoutMs)),
+    timeoutMs,
+  );
+  const channelsCheck = await runChecked(
+    "telegram-channels",
+    "Telegram Delivery Readiness",
+    async () =>
+      analyzeChannels(
+        deps.getChannelsStatus
+          ? await deps.getChannelsStatus()
+          : await defaultGetChannelsStatus(timeoutMs),
+      ),
+    timeoutMs,
+  );
   checks.push(healthCheck, { ...channelsCheck, name: "Telegram Delivery Readiness" });
   let logFile: string | null = null;
   if (opts.logs !== false) {
