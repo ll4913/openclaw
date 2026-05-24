@@ -2666,6 +2666,7 @@ describe("gateway healthHandlers.status scope handling", () => {
       expect(vi.mocked(statusModule.getStatusSummary)).toHaveBeenCalledWith({
         includeSensitive,
         includeChannelSummary: true,
+        includeSessionSummary: true,
       });
       expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
     },
@@ -2676,7 +2677,7 @@ describe("gateway healthHandlers.status scope handling", () => {
 
     await healthHandlers.status({
       req: {} as never,
-      params: { includeChannelSummary: false },
+      params: { includeChannelSummary: false, includeSessionSummary: false },
       respond: respond as never,
       context: {} as never,
       client: { connect: { role: "operator", scopes: ["operator.read"] } } as never,
@@ -2686,6 +2687,7 @@ describe("gateway healthHandlers.status scope handling", () => {
     expect(vi.mocked(statusModule.getStatusSummary)).toHaveBeenCalledWith({
       includeSensitive: false,
       includeChannelSummary: false,
+      includeSessionSummary: false,
     });
     expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
   });

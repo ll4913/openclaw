@@ -54,7 +54,7 @@ export async function checkGatewayHealth(params: {
   try {
     status = await callGateway<StatusSummary>({
       method: "status",
-      params: { includeChannelSummary: false },
+      params: { includeChannelSummary: false, includeSessionSummary: false },
       timeoutMs,
       config: params.cfg,
     });

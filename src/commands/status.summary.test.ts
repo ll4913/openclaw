@@ -179,6 +179,28 @@ describe("getStatusSummary", () => {
     expect(resolveLinkChannelContext).not.toHaveBeenCalled();
   });
 
+  it("skips session store scanning when explicitly disabled", async () => {
+    const summary = await getStatusSummary({
+      includeChannelSummary: false,
+      includeSessionSummary: false,
+    });
+
+    expect(summary.runtimeVersion).toBe("2026.3.8");
+    expect(summary.sessions).toStrictEqual({
+      paths: [],
+      count: 0,
+      defaults: {
+        model: null,
+        contextTokens: null,
+      },
+      recent: [],
+      byAgent: [],
+    });
+    expect(statusSummaryMocks.readSessionStoreReadOnly).not.toHaveBeenCalled();
+    expect(statusSummaryRuntime.resolveConfiguredStatusModelRef).not.toHaveBeenCalled();
+    expect(statusSummaryRuntime.resolveSessionRuntimeLabel).not.toHaveBeenCalled();
+  });
+
   it("does not trigger async context warmup while building status summaries", async () => {
     await getStatusSummary();
 

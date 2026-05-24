@@ -147,6 +147,7 @@ export const healthHandlers: GatewayRequestHandlers = {
     const status = await getStatusSummary({
       includeSensitive: scopes.includes(ADMIN_SCOPE),
       includeChannelSummary: params.includeChannelSummary !== false,
+      includeSessionSummary: params.includeSessionSummary !== false,
     });
     if (context.getEventLoopHealth) {
       status.eventLoop = context.getEventLoopHealth();

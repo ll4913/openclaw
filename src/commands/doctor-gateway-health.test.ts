@@ -39,7 +39,7 @@ describe("checkGatewayHealth", () => {
 
     expect(callGateway).toHaveBeenNthCalledWith(1, {
       method: "status",
-      params: { includeChannelSummary: false },
+      params: { includeChannelSummary: false, includeSessionSummary: false },
       timeoutMs: 3000,
       config: cfg,
     });

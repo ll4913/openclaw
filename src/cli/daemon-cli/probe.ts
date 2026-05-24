@@ -89,7 +89,7 @@ export async function probeGatewayStatus(opts: {
             tlsFingerprint: opts.tlsFingerprint,
             ...(opts.config ? { config: opts.config } : {}),
             method: "status",
-            params: { includeChannelSummary: false },
+            params: { includeChannelSummary: false, includeSessionSummary: false },
             timeoutMs: opts.timeoutMs,
             ...(opts.configPath ? { configPath: opts.configPath } : {}),
           });

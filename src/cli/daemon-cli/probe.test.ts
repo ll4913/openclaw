@@ -162,7 +162,7 @@ describe("probeGatewayStatus", () => {
       password: undefined,
       tlsFingerprint: "abc123",
       method: "status",
-      params: { includeChannelSummary: false },
+      params: { includeChannelSummary: false, includeSessionSummary: false },
       timeoutMs: 5_000,
       configPath: "/tmp/openclaw-daemon/openclaw.json",
     });
@@ -209,7 +209,7 @@ describe("probeGatewayStatus", () => {
       tlsFingerprint: undefined,
       config,
       method: "status",
-      params: { includeChannelSummary: false },
+      params: { includeChannelSummary: false, includeSessionSummary: false },
       timeoutMs: 30_000,
     });
   });

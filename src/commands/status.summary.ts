@@ -117,18 +117,16 @@ export async function getStatusSummary(
   options: {
     includeSensitive?: boolean;
     includeChannelSummary?: boolean;
+    includeSessionSummary?: boolean;
     config?: OpenClawConfig;
     sourceConfig?: OpenClawConfig;
   } = {},
 ): Promise<StatusSummary> {
-  const { includeSensitive = true, includeChannelSummary = true } = options;
   const {
-    classifySessionKey,
-    resolveConfiguredStatusModelRef,
-    resolveContextTokensForModel,
-    resolveSessionRuntimeLabel,
-    resolveSessionModelRef,
-  } = await loadStatusSummaryRuntimeModule();
+    includeSensitive = true,
+    includeChannelSummary = true,
+    includeSessionSummary = true,
+  } = options;
   const cfg = options.config ?? getRuntimeConfig();
   const channelScopeConfig =
     options.sourceConfig === undefined
@@ -169,143 +167,173 @@ export async function getStatusSummary(
   const tasks = taskMaintenanceModule.getInspectableTaskRegistrySummary();
   const taskAudit = taskMaintenanceModule.getInspectableTaskAuditSummary();
 
-  const resolved = resolveConfiguredStatusModelRef({
-    cfg,
-    defaultProvider: DEFAULT_PROVIDER,
-    defaultModel: DEFAULT_MODEL,
-  });
-  const configModel = resolved.model ?? DEFAULT_MODEL;
-  const configContextTokens =
-    resolveContextTokensForModel({
-      cfg,
-      provider: resolved.provider ?? DEFAULT_PROVIDER,
-      model: configModel,
-      contextTokensOverride: cfg.agents?.defaults?.contextTokens,
-      fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
-      // Keep `status`/`status --json` startup read-only. These summary lookups
-      // should not kick off background provider discovery or plugin scans.
-      allowAsyncLoad: false,
-    }) ?? DEFAULT_CONTEXT_TOKENS;
-
-  const now = Date.now();
-  const storeCache = new Map<string, Record<string, SessionEntry | undefined>>();
-  const loadStore = (storePath: string) => {
-    const cached = storeCache.get(storePath);
-    if (cached) {
-      return cached;
-    }
-    const store = readSessionStoreReadOnly(storePath);
-    storeCache.set(storePath, store);
-    return store;
+  let sessions: StatusSummary["sessions"] = {
+    paths: [],
+    count: 0,
+    defaults: {
+      model: null,
+      contextTokens: null,
+    },
+    recent: [],
+    byAgent: [],
   };
-  const buildSessionRows = (
-    store: Record<string, SessionEntry | undefined>,
-    opts: { agentIdOverride?: string } = {},
-  ) =>
-    Object.entries(store)
-      .filter(([key]) => key !== "global" && key !== "unknown")
-      .map(([key, entry]) => {
-        const updatedAt = entry?.updatedAt ?? null;
-        const age = updatedAt ? now - updatedAt : null;
-        const parsedAgentId = parseAgentSessionKey(key)?.agentId;
-        const agentId = opts.agentIdOverride ?? parsedAgentId;
-        const configuredForSession = resolveConfiguredStatusModelRef({
-          cfg,
-          defaultProvider: DEFAULT_PROVIDER,
-          defaultModel: DEFAULT_MODEL,
-          agentId,
-        });
-        const configuredSessionModel = configuredForSession.model ?? DEFAULT_MODEL;
-        const configuredSessionModelLabel = `${configuredForSession.provider ?? DEFAULT_PROVIDER}/${configuredSessionModel}`;
-        const resolvedModel = resolveSessionModelRef(cfg, entry, opts.agentIdOverride);
-        const model = resolvedModel.model ?? configuredSessionModel ?? null;
-        const selectedModelLabel =
-          resolvedModel.provider && model ? `${resolvedModel.provider}/${model}` : model;
-        const modelSelectionDiffers =
-          selectedModelLabel != null &&
-          selectedModelLabel !== configuredSessionModelLabel &&
-          !areRuntimeModelRefsEquivalent(selectedModelLabel, configuredSessionModelLabel) &&
-          hasUserPinnedModelSelection(entry);
-        const contextTokens =
-          resolveContextTokensForModel({
-            cfg,
-            provider: resolvedModel.provider,
-            model,
-            contextTokensOverride: entry?.contextTokens,
-            fallbackContextTokens: configContextTokens ?? undefined,
-            allowAsyncLoad: false,
-          }) ?? null;
-        const total = resolveSessionTotalTokens(entry);
-        const totalTokensFresh =
-          typeof entry?.totalTokens === "number" ? entry?.totalTokensFresh !== false : false;
-        const remaining =
-          contextTokens != null && total !== undefined ? Math.max(0, contextTokens - total) : null;
-        const pct =
-          contextTokens && contextTokens > 0 && total !== undefined
-            ? Math.min(999, Math.round((total / contextTokens) * 100))
-            : null;
-        const runtime = resolveSessionRuntimeLabel({
-          cfg,
-          entry,
-          provider: resolvedModel.provider,
-          model: model ?? "",
-          agentId,
-          sessionKey: key,
-        });
 
-        return {
-          agentId,
-          key,
-          kind: classifySessionKey(key, entry),
-          sessionId: entry?.sessionId,
-          updatedAt,
-          age,
-          thinkingLevel: entry?.thinkingLevel,
-          fastMode: entry?.fastMode,
-          verboseLevel: entry?.verboseLevel,
-          traceLevel: entry?.traceLevel,
-          reasoningLevel: entry?.reasoningLevel,
-          elevatedLevel: entry?.elevatedLevel,
-          systemSent: entry?.systemSent,
-          abortedLastRun: entry?.abortedLastRun,
-          inputTokens: entry?.inputTokens,
-          outputTokens: entry?.outputTokens,
-          cacheRead: entry?.cacheRead,
-          cacheWrite: entry?.cacheWrite,
-          totalTokens: total ?? null,
-          totalTokensFresh,
-          remainingTokens: remaining,
-          percentUsed: pct,
-          model,
-          configuredModel: configuredSessionModelLabel,
-          selectedModel: selectedModelLabel,
-          modelSelectionReason: modelSelectionDiffers ? "session override" : null,
-          runtime,
-          contextTokens,
-          flags: buildFlags(entry),
-        } satisfies SessionStatus;
-      })
-      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  if (includeSessionSummary) {
+    const {
+      classifySessionKey,
+      resolveConfiguredStatusModelRef,
+      resolveContextTokensForModel,
+      resolveSessionRuntimeLabel,
+      resolveSessionModelRef,
+    } = await loadStatusSummaryRuntimeModule();
+    const resolved = resolveConfiguredStatusModelRef({
+      cfg,
+      defaultProvider: DEFAULT_PROVIDER,
+      defaultModel: DEFAULT_MODEL,
+    });
+    const configModel = resolved.model ?? DEFAULT_MODEL;
+    const configContextTokens =
+      resolveContextTokensForModel({
+        cfg,
+        provider: resolved.provider ?? DEFAULT_PROVIDER,
+        model: configModel,
+        contextTokensOverride: cfg.agents?.defaults?.contextTokens,
+        fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
+        // Keep `status`/`status --json` startup read-only. These summary lookups
+        // should not kick off background provider discovery or plugin scans.
+        allowAsyncLoad: false,
+      }) ?? DEFAULT_CONTEXT_TOKENS;
 
-  const paths = new Set<string>();
-  const byAgent = agentList.agents.map((agent) => {
-    const storePath = resolveStorePath(cfg.session?.store, { agentId: agent.id });
-    paths.add(storePath);
-    const store = loadStore(storePath);
-    const sessions = buildSessionRows(store, { agentIdOverride: agent.id });
-    return {
-      agentId: agent.id,
-      path: storePath,
-      count: sessions.length,
-      recent: sessions.slice(0, 10),
+    const now = Date.now();
+    const storeCache = new Map<string, Record<string, SessionEntry | undefined>>();
+    const loadStore = (storePath: string) => {
+      const cached = storeCache.get(storePath);
+      if (cached) {
+        return cached;
+      }
+      const store = readSessionStoreReadOnly(storePath);
+      storeCache.set(storePath, store);
+      return store;
     };
-  });
+    const buildSessionRows = (
+      store: Record<string, SessionEntry | undefined>,
+      opts: { agentIdOverride?: string } = {},
+    ) =>
+      Object.entries(store)
+        .filter(([key]) => key !== "global" && key !== "unknown")
+        .map(([key, entry]) => {
+          const updatedAt = entry?.updatedAt ?? null;
+          const age = updatedAt ? now - updatedAt : null;
+          const parsedAgentId = parseAgentSessionKey(key)?.agentId;
+          const agentId = opts.agentIdOverride ?? parsedAgentId;
+          const configuredForSession = resolveConfiguredStatusModelRef({
+            cfg,
+            defaultProvider: DEFAULT_PROVIDER,
+            defaultModel: DEFAULT_MODEL,
+            agentId,
+          });
+          const configuredSessionModel = configuredForSession.model ?? DEFAULT_MODEL;
+          const configuredSessionModelLabel = `${configuredForSession.provider ?? DEFAULT_PROVIDER}/${configuredSessionModel}`;
+          const resolvedModel = resolveSessionModelRef(cfg, entry, opts.agentIdOverride);
+          const model = resolvedModel.model ?? configuredSessionModel ?? null;
+          const selectedModelLabel =
+            resolvedModel.provider && model ? `${resolvedModel.provider}/${model}` : model;
+          const modelSelectionDiffers =
+            selectedModelLabel != null &&
+            selectedModelLabel !== configuredSessionModelLabel &&
+            !areRuntimeModelRefsEquivalent(selectedModelLabel, configuredSessionModelLabel) &&
+            hasUserPinnedModelSelection(entry);
+          const contextTokens =
+            resolveContextTokensForModel({
+              cfg,
+              provider: resolvedModel.provider,
+              model,
+              contextTokensOverride: entry?.contextTokens,
+              fallbackContextTokens: configContextTokens ?? undefined,
+              allowAsyncLoad: false,
+            }) ?? null;
+          const total = resolveSessionTotalTokens(entry);
+          const totalTokensFresh =
+            typeof entry?.totalTokens === "number" ? entry?.totalTokensFresh !== false : false;
+          const remaining =
+            contextTokens != null && total !== undefined
+              ? Math.max(0, contextTokens - total)
+              : null;
+          const pct =
+            contextTokens && contextTokens > 0 && total !== undefined
+              ? Math.min(999, Math.round((total / contextTokens) * 100))
+              : null;
+          const runtime = resolveSessionRuntimeLabel({
+            cfg,
+            entry,
+            provider: resolvedModel.provider,
+            model: model ?? "",
+            agentId,
+            sessionKey: key,
+          });
 
-  const allSessions = Array.from(paths)
-    .flatMap((storePath) => buildSessionRows(loadStore(storePath)))
-    .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-  const recent = allSessions.slice(0, 10);
-  const totalSessions = allSessions.length;
+          return {
+            agentId,
+            key,
+            kind: classifySessionKey(key, entry),
+            sessionId: entry?.sessionId,
+            updatedAt,
+            age,
+            thinkingLevel: entry?.thinkingLevel,
+            fastMode: entry?.fastMode,
+            verboseLevel: entry?.verboseLevel,
+            traceLevel: entry?.traceLevel,
+            reasoningLevel: entry?.reasoningLevel,
+            elevatedLevel: entry?.elevatedLevel,
+            systemSent: entry?.systemSent,
+            abortedLastRun: entry?.abortedLastRun,
+            inputTokens: entry?.inputTokens,
+            outputTokens: entry?.outputTokens,
+            cacheRead: entry?.cacheRead,
+            cacheWrite: entry?.cacheWrite,
+            totalTokens: total ?? null,
+            totalTokensFresh,
+            remainingTokens: remaining,
+            percentUsed: pct,
+            model,
+            configuredModel: configuredSessionModelLabel,
+            selectedModel: selectedModelLabel,
+            modelSelectionReason: modelSelectionDiffers ? "session override" : null,
+            runtime,
+            contextTokens,
+            flags: buildFlags(entry),
+          } satisfies SessionStatus;
+        })
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+
+    const paths = new Set<string>();
+    const byAgent = agentList.agents.map((agent) => {
+      const storePath = resolveStorePath(cfg.session?.store, { agentId: agent.id });
+      paths.add(storePath);
+      const store = loadStore(storePath);
+      const agentSessions = buildSessionRows(store, { agentIdOverride: agent.id });
+      return {
+        agentId: agent.id,
+        path: storePath,
+        count: agentSessions.length,
+        recent: agentSessions.slice(0, 10),
+      };
+    });
+
+    const allSessions = Array.from(paths)
+      .flatMap((storePath) => buildSessionRows(loadStore(storePath)))
+      .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    sessions = {
+      paths: Array.from(paths),
+      count: allSessions.length,
+      defaults: {
+        model: configModel ?? null,
+        contextTokens: configContextTokens ?? null,
+      },
+      recent: allSessions.slice(0, 10),
+      byAgent,
+    };
+  }
 
   const summary: StatusSummary = {
     runtimeVersion: resolveRuntimeServiceVersion(process.env),
@@ -325,16 +353,7 @@ export async function getStatusSummary(
     queuedSystemEvents,
     tasks,
     taskAudit,
-    sessions: {
-      paths: Array.from(paths),
-      count: totalSessions,
-      defaults: {
-        model: configModel ?? null,
-        contextTokens: configContextTokens ?? null,
-      },
-      recent,
-      byAgent,
-    },
+    sessions,
   };
   return includeSensitive ? summary : redactSensitiveStatusSummary(summary);
 }
