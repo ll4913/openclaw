@@ -366,6 +366,7 @@ describe("gateway-status command", () => {
     const firstTarget = requireRecord(targets[0], "first gateway target");
     requireRecord(firstTarget.health, "first target health");
     requireRecord(firstTarget.summary, "first target summary");
+    expect(readProbeCalls().every((call) => call.detailLevel === "presence")).toBe(true);
   });
 
   it("surfaces degraded model-pricing health as a warning", async () => {

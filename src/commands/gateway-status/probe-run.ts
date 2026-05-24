@@ -133,6 +133,7 @@ export async function runGatewayStatusProbePass(params: {
               : undefined,
           preauthHandshakeTimeoutMs: params.cfg.gateway?.handshakeTimeoutMs,
           timeoutMs: resolveProbeBudgetMs(params.overallTimeoutMs, target),
+          detailLevel: "presence",
         });
         return {
           target,
