@@ -44,6 +44,8 @@ const normalizeThinkingLevel = vi.fn((raw?: string | null) => {
   return undefined;
 });
 
+const loggerWarn = vi.fn();
+
 function fakeApi(overrides: any = {}) {
   return {
     id: "llm-task",
@@ -62,7 +64,7 @@ function fakeApi(overrides: any = {}) {
         normalizeThinkingLevel,
       },
     },
-    logger: { debug() {}, info() {}, warn() {}, error() {} },
+    logger: { debug() {}, info() {}, warn: loggerWarn, error() {} },
     registerTool() {},
     ...overrides,
   };
@@ -83,6 +85,7 @@ function resetRunnerMocks() {
   }));
   resolveThinkingPolicy.mockClear();
   normalizeThinkingLevel.mockClear();
+  loggerWarn.mockClear();
 }
 
 async function executeEmbeddedRun(input: Record<string, unknown>) {
@@ -267,11 +270,11 @@ describe("llm-task tool (json-only)", () => {
     expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
   });
 
-  it("throws on unsupported xhigh thinking level", async () => {
-    const tool = createLlmTaskTool(fakeApi());
-    await expect(tool.execute("id", { prompt: "x", thinking: "xhigh" })).rejects.toThrow(
-      /not supported/i,
-    );
+  it("downgrades unsupported thinking levels to off instead of failing the task", async () => {
+    mockEmbeddedRunJson({ ok: true });
+    const call = await executeEmbeddedRun({ prompt: "x", thinking: "xhigh" });
+    expect(call.thinkLevel).toBe("off");
+    expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining("not supported"));
   });
 
   it("does not pass thinkLevel when thinking is omitted", async () => {

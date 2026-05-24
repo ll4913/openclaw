@@ -49,28 +49,36 @@ describe("refreshGatewayHealthSnapshot", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps refreshes coalesced while preserving the first probe intent", async () => {
+  it("keeps fast health refreshes separate from slow probe refreshes", async () => {
     const healthState = await loadHealthState();
-    let resolveSnapshot: ((summary: HealthSummary) => void) | undefined;
+    const resolvers: Array<(summary: HealthSummary) => void> = [];
     getHealthSnapshotMock.mockImplementation(
       () =>
         new Promise<HealthSummary>((resolve) => {
-          resolveSnapshot = resolve;
+          resolvers.push(resolve);
         }),
     );
 
-    const first = healthState.refreshGatewayHealthSnapshot({ probe: false });
-    const second = healthState.refreshGatewayHealthSnapshot({ probe: true });
+    const fastFirst = healthState.refreshGatewayHealthSnapshot({ probe: false });
+    const probe = healthState.refreshGatewayHealthSnapshot({ probe: true });
+    const fastSecond = healthState.refreshGatewayHealthSnapshot({ probe: false });
 
-    expect(getHealthSnapshotMock).toHaveBeenCalledTimes(1);
-    expect(getHealthSnapshotMock).toHaveBeenCalledWith({
+    expect(getHealthSnapshotMock).toHaveBeenCalledTimes(2);
+    expect(healthSnapshotCallArg(0)).toEqual({
       probe: false,
       includeSensitive: false,
       runtimeSnapshot: undefined,
     });
-    expect(Object.hasOwn(healthSnapshotCallArg() ?? {}, "eventLoop")).toBe(false);
-    resolveSnapshot?.(createHealthSummary());
-    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(healthSnapshotCallArg(1)).toEqual({
+      probe: true,
+      includeSensitive: false,
+      runtimeSnapshot: undefined,
+    });
+    expect(Object.hasOwn(healthSnapshotCallArg(0) ?? {}, "eventLoop")).toBe(false);
+    resolvers[0]?.(createHealthSummary());
+    resolvers[1]?.(createHealthSummary());
+    await expect(Promise.all([fastFirst, probe, fastSecond])).resolves.toHaveLength(3);
+    await expect(fastFirst).resolves.toBe(await fastSecond);
   });
 
   it("passes event-loop health only when the hook returns a snapshot", async () => {

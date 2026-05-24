@@ -41,7 +41,6 @@ const MAX_RESTART_ATTEMPTS = 10;
 const CHANNEL_STOP_ABORT_TIMEOUT_MS = 5_000;
 const CHANNEL_STARTUP_CONCURRENCY = 4;
 const CHANNEL_STARTUP_HANDOFF_STAGGER_MS = 500;
-const CHANNEL_STARTUP_HANDOFF_MAX_STAGGER_MS = 7_500;
 
 function waitForChannelStartupHandoff(): Promise<void> {
   return new Promise((resolve) => {
@@ -50,18 +49,11 @@ function waitForChannelStartupHandoff(): Promise<void> {
   });
 }
 
-function computeChannelStartupHandoffDelayMs(params: {
-  fullChannelStart: boolean;
-  accountCount: number;
-  accountIndex: number;
-}): number {
-  if (!params.fullChannelStart || params.accountCount <= 1) {
+function computeChannelStartupHandoffDelayMs(params: { accountCount: number }): number {
+  if (params.accountCount <= 1) {
     return 0;
   }
-  return Math.min(
-    params.accountIndex * CHANNEL_STARTUP_HANDOFF_STAGGER_MS,
-    CHANNEL_STARTUP_HANDOFF_MAX_STAGGER_MS,
-  );
+  return CHANNEL_STARTUP_HANDOFF_STAGGER_MS;
 }
 
 type ChannelRuntimeStore = {
@@ -250,6 +242,8 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   // Tracks accounts that were manually stopped so we don't auto-restart them.
   const manuallyStopped = new Set<string>();
   const recoveryStopTimedOut = new Set<string>();
+  let startupHandoffChain: Promise<unknown> = Promise.resolve();
+  let startupHandoffHasEntered = false;
 
   const restartKey = (channelId: ChannelId, accountId: string) => `${channelId}:${accountId}`;
   const ensureChannelLog = (channelId: ChannelId): SubsystemLogger => {
@@ -364,6 +358,24 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   const measureStartup = async <T>(name: string, run: () => T | Promise<T>): Promise<T> => {
     return startupTrace ? startupTrace.measure(name, run) : await run();
   };
+  const waitForReservedStartupHandoff = async (
+    stepMs: number,
+    abortSignal: AbortSignal,
+  ): Promise<void> => {
+    if (stepMs <= 0) {
+      return;
+    }
+    const shouldDelay = startupHandoffHasEntered;
+    startupHandoffHasEntered = true;
+    const previous = startupHandoffChain.catch(() => {});
+    const entry = previous.then(async () => {
+      if (shouldDelay) {
+        await sleepWithAbort(stepMs, abortSignal);
+      }
+    });
+    startupHandoffChain = entry.catch(() => {});
+    await entry;
+  };
 
   const evictStaleChannelAccountState = (
     channelId: ChannelId,
@@ -414,7 +426,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
 
     const startup = await runTasksWithConcurrency({
       limit: CHANNEL_STARTUP_CONCURRENCY,
-      tasks: accountIds.map((id, accountIndex) => async () => {
+      tasks: accountIds.map((id) => async () => {
         if (store.tasks.has(id)) {
           return;
         }
@@ -545,13 +557,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
             if (startupTrace || staggerStartupHandoff) {
               await waitForChannelStartupHandoff();
               const handoffDelayMs = computeChannelStartupHandoffDelayMs({
-                fullChannelStart: !accountId,
                 accountCount: accountIds.length,
-                accountIndex,
               });
-              if (handoffDelayMs > 0) {
-                await sleepWithAbort(handoffDelayMs, abort.signal);
-              }
+              await waitForReservedStartupHandoff(handoffDelayMs, abort.signal);
             }
             if (abort.signal.aborted || manuallyStopped.has(rKey)) {
               return;

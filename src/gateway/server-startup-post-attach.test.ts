@@ -916,6 +916,9 @@ describe("startGatewayPostAttachRuntime", () => {
       await vi.waitFor(() => {
         expect(hoisted.warmCurrentProviderAuthState).toHaveBeenCalledTimes(1);
       });
+      expect(hoisted.warmCurrentProviderAuthState.mock.calls[0]?.[1]).toMatchObject({
+        agentScope: "default",
+      });
     } finally {
       vi.useRealTimers();
     }

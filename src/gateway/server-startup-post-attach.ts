@@ -200,7 +200,7 @@ function scheduleProviderAuthStatePrewarm(params: {
       rewarmInFlight = true;
       try {
         const metrics = await measureProviderAuthWarm(() =>
-          warmCurrentProviderAuthState(cfg, { isCancelled: isStopped }),
+          warmCurrentProviderAuthState(cfg, { isCancelled: isStopped, agentScope: "default" }),
         );
         if (isStopped()) {
           return;
@@ -253,7 +253,7 @@ function scheduleProviderAuthStatePrewarm(params: {
           }
           const cfg = params.getConfig();
           const metrics = await measureProviderAuthWarm(() =>
-            warmCurrentProviderAuthState(cfg, { isCancelled: isStopped }),
+            warmCurrentProviderAuthState(cfg, { isCancelled: isStopped, agentScope: "default" }),
           );
           if (isStopped()) {
             return;
@@ -1115,7 +1115,7 @@ export async function startGatewayPostAttachRuntime(
         }
         const postReadySidecars = [...result.postReadySidecars];
         const gatewayLifetimeSidecars: GatewayPostReadySidecarHandle[] = [];
-        if (params.providerAuthPrewarm?.enabled !== false) {
+        if (params.providerAuthPrewarm?.enabled === true) {
           gatewayLifetimeSidecars.push(
             scheduleProviderAuthStatePrewarm({
               getConfig: params.providerAuthPrewarm?.getConfig ?? (() => params.cfgAtStart),

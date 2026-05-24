@@ -15,7 +15,9 @@ let presenceVersion = 1;
 let healthVersion = 1;
 let healthCache: HealthSummary | null = null;
 let healthRefresh: Promise<HealthSummary> | null = null;
+let healthProbeRefresh: Promise<HealthSummary> | null = null;
 let sensitiveHealthRefresh: Promise<HealthSummary> | null = null;
+let sensitiveHealthProbeRefresh: Promise<HealthSummary> | null = null;
 let broadcastHealthUpdate: ((snap: HealthSummary) => void) | null = null;
 
 export function buildGatewaySnapshot(opts?: { includeSensitive?: boolean }): Snapshot {
@@ -80,7 +82,14 @@ export async function refreshGatewayHealthSnapshot(opts?: {
   getEventLoopHealth?: () => GatewayEventLoopHealth | undefined;
 }) {
   const includeSensitive = opts?.includeSensitive === true;
-  let refresh = includeSensitive ? sensitiveHealthRefresh : healthRefresh;
+  const probe = opts?.probe === true;
+  let refresh = includeSensitive
+    ? probe
+      ? sensitiveHealthProbeRefresh
+      : sensitiveHealthRefresh
+    : probe
+      ? healthProbeRefresh
+      : healthRefresh;
   if (!refresh) {
     refresh = (async () => {
       let runtimeSnapshot: ChannelRuntimeSnapshot | undefined;
@@ -91,12 +100,12 @@ export async function refreshGatewayHealthSnapshot(opts?: {
       }
       const eventLoop = opts?.getEventLoopHealth?.();
       const snap = await getHealthSnapshot({
-        probe: opts?.probe,
+        probe,
         includeSensitive,
         runtimeSnapshot,
         ...(eventLoop ? { eventLoop } : {}),
       });
-      if (!includeSensitive) {
+      if (!includeSensitive && !probe) {
         healthCache = snap;
         healthVersion += 1;
         if (broadcastHealthUpdate) {
@@ -106,13 +115,25 @@ export async function refreshGatewayHealthSnapshot(opts?: {
       return snap;
     })().finally(() => {
       if (includeSensitive) {
-        sensitiveHealthRefresh = null;
+        if (probe) {
+          sensitiveHealthProbeRefresh = null;
+        } else {
+          sensitiveHealthRefresh = null;
+        }
+      } else if (probe) {
+        healthProbeRefresh = null;
       } else {
         healthRefresh = null;
       }
     });
     if (includeSensitive) {
-      sensitiveHealthRefresh = refresh;
+      if (probe) {
+        sensitiveHealthProbeRefresh = refresh;
+      } else {
+        sensitiveHealthRefresh = refresh;
+      }
+    } else if (probe) {
+      healthProbeRefresh = refresh;
     } else {
       healthRefresh = refresh;
     }

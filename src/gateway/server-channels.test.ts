@@ -167,6 +167,7 @@ function createManager(options?: {
   getRuntimeConfig?: () => Record<string, unknown>;
   channelIds?: ChannelId[];
   startupTrace?: { measure: <T>(name: string, run: () => T | Promise<T>) => Promise<T> };
+  staggerStartupHandoff?: boolean;
   fillChannelDependencies?: boolean;
 }) {
   const log = createSubsystemLogger("gateway/server-channels-test");
@@ -192,6 +193,9 @@ function createManager(options?: {
       ? { resolveStartupChannelRuntime: options.resolveStartupChannelRuntime }
       : {}),
     ...(options?.startupTrace ? { startupTrace: options.startupTrace } : {}),
+    ...(options?.staggerStartupHandoff === undefined
+      ? {}
+      : { staggerStartupHandoff: options.staggerStartupHandoff }),
   });
 }
 
@@ -851,6 +855,41 @@ describe("server-channels auto restart", () => {
     releases.splice(0).forEach((release) => release());
     await start;
     expect(startAccount).toHaveBeenCalledTimes(6);
+
+    await manager.stopChannel("discord");
+  });
+
+  it("staggered startup serializes account handoff entry", async () => {
+    const accountIds = ["one", "two", "three"];
+    const startAccount = vi.fn(
+      async ({ abortSignal }: { abortSignal: AbortSignal }) =>
+        await new Promise<void>((resolve) => {
+          abortSignal.addEventListener("abort", () => resolve(), { once: true });
+        }),
+    );
+    installTestRegistry(
+      createTestPlugin({
+        listAccountIds: () => accountIds,
+        startAccount,
+      }),
+    );
+    const manager = createManager({ staggerStartupHandoff: true });
+
+    await manager.startChannel("discord");
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    expect(startAccount).toHaveBeenCalledTimes(1);
+    expect(hoisted.sleepWithAbort.mock.calls.map(([ms]) => ms)).toEqual([500]);
+
+    await vi.advanceTimersByTimeAsync(500);
+    await flushMicrotasks();
+    expect(startAccount).toHaveBeenCalledTimes(2);
+    expect(hoisted.sleepWithAbort.mock.calls.map(([ms]) => ms)).toEqual([500, 500]);
+
+    await vi.advanceTimersByTimeAsync(500);
+    await flushMicrotasks();
+    expect(startAccount).toHaveBeenCalledTimes(3);
 
     await manager.stopChannel("discord");
   });

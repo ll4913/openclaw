@@ -140,6 +140,10 @@ function supportsThinkingPolicyLevel(
   return !!level && policy.levels.some((entry) => entry.id === level);
 }
 
+function fallbackThinkingLevelForUnsupported(policy: ThinkingPolicy) {
+  return policy.levels.some((entry) => entry.id === "off") ? "off" : undefined;
+}
+
 export function createLlmTaskTool(api: OpenClawPluginApi) {
   return {
     ...llmTaskToolDefinition,
@@ -213,9 +217,11 @@ export function createLlmTaskTool(api: OpenClawPluginApi) {
           );
         }
         if (!supportsThinkingPolicyLevel(thinkingPolicy, thinkLevel)) {
-          throw new Error(
-            `Thinking level "${thinkLevel}" is not supported for ${provider}/${model}. Use one of: ${thinkingLevelsHint}.`,
+          const fallbackLevel = fallbackThinkingLevelForUnsupported(thinkingPolicy);
+          api.logger.warn?.(
+            `llm-task thinking level "${thinkLevel}" is not supported for ${provider}/${model}; using ${fallbackLevel ?? "provider default"}. Supported levels: ${thinkingLevelsHint}.`,
           );
+          thinkLevel = fallbackLevel;
         }
       }
 
