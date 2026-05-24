@@ -40,12 +40,28 @@ const CHANNEL_RESTART_POLICY: BackoffPolicy = {
 const MAX_RESTART_ATTEMPTS = 10;
 const CHANNEL_STOP_ABORT_TIMEOUT_MS = 5_000;
 const CHANNEL_STARTUP_CONCURRENCY = 4;
+const CHANNEL_STARTUP_HANDOFF_STAGGER_MS = 500;
+const CHANNEL_STARTUP_HANDOFF_MAX_STAGGER_MS = 7_500;
 
 function waitForChannelStartupHandoff(): Promise<void> {
   return new Promise((resolve) => {
     const handle = setImmediate(resolve);
     handle.unref?.();
   });
+}
+
+function computeChannelStartupHandoffDelayMs(params: {
+  fullChannelStart: boolean;
+  accountCount: number;
+  accountIndex: number;
+}): number {
+  if (!params.fullChannelStart || params.accountCount <= 1) {
+    return 0;
+  }
+  return Math.min(
+    params.accountIndex * CHANNEL_STARTUP_HANDOFF_STAGGER_MS,
+    CHANNEL_STARTUP_HANDOFF_MAX_STAGGER_MS,
+  );
 }
 
 type ChannelRuntimeStore = {
@@ -191,6 +207,7 @@ type ChannelManagerOptions = {
   resolveStartupChannelRuntime?: () => ChannelRuntimeSurface | Promise<ChannelRuntimeSurface>;
   getPluginHttpRouteRegistry?: () => PluginRegistry;
   startupTrace?: GatewayStartupTrace;
+  staggerStartupHandoff?: boolean;
 };
 
 type StartChannelOptions = {
@@ -224,6 +241,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     resolveStartupChannelRuntime,
     getPluginHttpRouteRegistry,
     startupTrace,
+    staggerStartupHandoff = false,
   } = opts;
 
   const channelStores = new Map<ChannelId, ChannelRuntimeStore>();
@@ -396,7 +414,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
 
     const startup = await runTasksWithConcurrency({
       limit: CHANNEL_STARTUP_CONCURRENCY,
-      tasks: accountIds.map((id) => async () => {
+      tasks: accountIds.map((id, accountIndex) => async () => {
         if (store.tasks.has(id)) {
           return;
         }
@@ -524,8 +542,16 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
             reconnectAttempts: preserveRestartAttempts ? (restartAttempts.get(rKey) ?? 0) : 0,
           });
           const task = Promise.resolve().then(async () => {
-            if (startupTrace) {
+            if (startupTrace || staggerStartupHandoff) {
               await waitForChannelStartupHandoff();
+              const handoffDelayMs = computeChannelStartupHandoffDelayMs({
+                fullChannelStart: !accountId,
+                accountCount: accountIds.length,
+                accountIndex,
+              });
+              if (handoffDelayMs > 0) {
+                await sleepWithAbort(handoffDelayMs, abort.signal);
+              }
             }
             if (abort.signal.aborted || manuallyStopped.has(rKey)) {
               return;
