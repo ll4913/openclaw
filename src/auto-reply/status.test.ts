@@ -192,6 +192,28 @@ describe("buildStatusMessage", () => {
     expect(normalizeTestText(text)).toContain("Runtime: Claude CLI");
   });
 
+  it("shows Codex runtime auth instead of an incompatible selected auth label", () => {
+    const text = buildStatusMessage({
+      agent: {
+        model: "openai/gpt-5.5",
+      },
+      resolvedHarness: "codex",
+      modelAuth: "api-key (anthropic:default)",
+      activeModelAuth: "oauth (openai-codex:work)",
+      sessionEntry: {
+        sessionId: "codex-status",
+        updatedAt: 0,
+      },
+      sessionKey: "agent:main:main",
+      queue: { mode: "collect", depth: 0 },
+    });
+
+    const normalized = normalizeTestText(text);
+    expect(normalized).toContain("Model: openai/gpt-5.5 · ? oauth (openai-codex:work)");
+    expect(normalized).toContain("Runtime: OpenAI Codex");
+    expect(normalized).not.toContain("anthropic:default");
+  });
+
   it("falls back to the configured CLI provider when session provider fields are empty", () => {
     const text = buildStatusMessage({
       config: {

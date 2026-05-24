@@ -808,6 +808,131 @@ describe("applyExtraParamsToAgent", () => {
     });
   });
 
+  it("promotes reasoning-only Qwen 3.7 Max finals to visible text", async () => {
+    const resultMessage = {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "qwen final answer" }],
+      api: "openai-completions",
+      provider: "dashscope",
+      model: "qwen3.7-max",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    } as const;
+    const baseStreamFn: StreamFn = () => {
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        stream.push({ type: "done", reason: "stop", message: resultMessage as never });
+      });
+      return stream;
+    };
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(agent, undefined, "dashscope", "qwen3.7-max", undefined, "high");
+
+    const model = {
+      api: "openai-completions",
+      provider: "dashscope",
+      id: "qwen3.7-max",
+    } as Model<"openai-completions">;
+    const stream = await agent.streamFn?.(model, { messages: [] }, {});
+    expect(stream).toBeDefined();
+    if (!stream) {
+      throw new Error("expected stream function");
+    }
+    const events: unknown[] = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "done",
+        reason: "stop",
+        message: {
+          ...resultMessage,
+          content: [{ type: "text", text: "qwen final answer" }],
+        },
+      },
+    ]);
+    await expect(stream.result()).resolves.toMatchObject({
+      content: [{ type: "text", text: "qwen final answer" }],
+    });
+  });
+
+  it("promotes reasoning-only Qwen 3.7 Max finals after provider stream wrappers", async () => {
+    const resultMessage = {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "qwen wrapped final answer" }],
+      api: "openai-completions",
+      provider: "dashscope",
+      model: "qwen3.7-max",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    } as const;
+    const baseStreamFn: StreamFn = () => {
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        stream.push({ type: "done", reason: "stop", message: resultMessage as never });
+      });
+      return stream;
+    };
+    extraParamsTesting.setProviderRuntimeDepsForTest({
+      prepareProviderExtraParams: () => undefined,
+      resolveProviderExtraParamsForTransport: () => undefined,
+      wrapProviderStreamFn: (params) => {
+        const underlying = params.context.streamFn ?? baseStreamFn;
+        return (model, context, options) => underlying(model, context, options);
+      },
+    });
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(agent, undefined, "dashscope", "qwen3.7-max", undefined, "high");
+
+    const stream = await agent.streamFn?.(
+      {
+        api: "openai-completions",
+        provider: "dashscope",
+        id: "qwen3.7-max",
+      } as Model<"openai-completions">,
+      { messages: [] },
+      {},
+    );
+    expect(stream).toBeDefined();
+    if (!stream) {
+      throw new Error("expected stream function");
+    }
+
+    const events: unknown[] = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "done",
+        reason: "stop",
+        message: {
+          ...resultMessage,
+          content: [{ type: "text", text: "qwen wrapped final answer" }],
+        },
+      },
+    ]);
+  });
+
   it("strips xai Responses reasoning payload fields", () => {
     const payload = runResponsesPayloadMutationCase({
       applyProvider: "xai",

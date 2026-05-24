@@ -136,6 +136,36 @@ function normalizeAuthMode(value?: string): NormalizedAuthMode | undefined {
   return undefined;
 }
 
+function resolveRuntimeStatusProvider(params: {
+  provider?: string | null;
+  resolvedHarness?: string | null;
+}): string | undefined {
+  const provider = normalizeOptionalLowercaseString(params.provider);
+  const harness = normalizeOptionalLowercaseString(params.resolvedHarness);
+  if (provider === "openai" && harness === "codex") {
+    return "openai-codex";
+  }
+  return provider || undefined;
+}
+
+function authLabelLooksCompatibleWithProvider(
+  label: string | undefined,
+  provider: string,
+): boolean {
+  const normalized = normalizeOptionalLowercaseString(label);
+  if (!normalized) {
+    return true;
+  }
+  const parenIndex = normalized.indexOf("(");
+  if (parenIndex < 0) {
+    return true;
+  }
+  const detail = normalized.slice(parenIndex + 1);
+  return (
+    detail.includes(`${provider}:`) || detail.includes(`${provider} `) || detail.includes(provider)
+  );
+}
+
 function resolveConfiguredTextVerbosity(params: {
   config?: OpenClawConfig;
   agentId?: string;
@@ -874,15 +904,27 @@ export function buildStatusMessage(args: StatusArgs): string {
   const activationLine = activationParts.filter(Boolean).join(" · ");
 
   const selectedModelLabel = modelRefs.selected.label || "unknown";
+  const runtimeStatusProvider = resolveRuntimeStatusProvider({
+    provider: selectedProvider,
+    resolvedHarness: args.resolvedHarness,
+  });
+  const displayModelLabel = selectedModelLabel;
   const runtimeAliasModelEquivalent = areRuntimeModelRefsEquivalent(
     selectedModelLabel,
     activeModelLabel,
   );
+  const runtimeAuthLabel =
+    runtimeStatusProvider && runtimeStatusProvider !== selectedProvider
+      ? authLabelLooksCompatibleWithProvider(args.modelAuth, runtimeStatusProvider)
+        ? args.modelAuth
+        : undefined
+      : args.modelAuth;
   const selectedAuthMode =
-    normalizeAuthMode(args.modelAuth) ?? resolveModelAuthMode(selectedProvider, args.config);
+    normalizeAuthMode(runtimeAuthLabel) ??
+    resolveModelAuthMode(runtimeStatusProvider ?? selectedProvider, args.config);
   const rawSelectedAuthLabelValue =
     selectedAuthMode && selectedAuthMode !== "unknown"
-      ? (args.modelAuth ?? selectedAuthMode)
+      ? (runtimeAuthLabel ?? selectedAuthMode)
       : undefined;
   const activeAuthMode =
     normalizeAuthMode(args.activeModelAuth) ?? resolveModelAuthMode(activeProvider, args.config);
@@ -891,7 +933,13 @@ export function buildStatusMessage(args: StatusArgs): string {
       ? (args.activeModelAuth ?? activeAuthMode)
       : undefined;
   const selectedAuthLabelValue =
-    rawSelectedAuthLabelValue ?? (runtimeAliasModelEquivalent ? activeAuthLabelValue : undefined);
+    runtimeStatusProvider &&
+    runtimeStatusProvider !== selectedProvider &&
+    !runtimeAuthLabel &&
+    authLabelLooksCompatibleWithProvider(activeAuthLabelValue, runtimeStatusProvider)
+      ? activeAuthLabelValue
+      : (rawSelectedAuthLabelValue ??
+        (runtimeAliasModelEquivalent ? activeAuthLabelValue : undefined));
   const fallbackState = resolveActiveFallbackState({
     selectedModelRef: selectedModelLabel,
     activeModelRef: activeModelLabel,
@@ -935,13 +983,13 @@ export function buildStatusMessage(args: StatusArgs): string {
   const modelLines = configDefaultDiffersFromSession
     ? [
         `🧠 Configured default: ${configuredDefaultModelLabel}`,
-        `📌 Session selected: ${selectedModelLabel}${selectedAuthLabel}${modelNote}`,
+        `📌 Session selected: ${displayModelLabel}${selectedAuthLabel}${modelNote}`,
         "⚠️ Reason: session override",
         `⚠️ This session is pinned to ${selectedModelLabel}; config primary ${configuredDefaultModelLabel} will apply to new/unpinned sessions.`,
         `↩️ Clear with: /model ${configuredDefaultModelLabel} or /reset`,
         "📖 Docs: https://docs.openclaw.ai/concepts/models#selection-source-and-fallback-behavior",
       ]
-    : [`🧠 Model: ${selectedModelLabel}${selectedAuthLabel}${modelNote}`];
+    : [`🧠 Model: ${displayModelLabel}${selectedAuthLabel}${modelNote}`];
 
   // Show configured fallback models (from agent model config)
   const configuredFallbacks = (() => {

@@ -785,7 +785,6 @@ function applyPostPluginStreamWrappers(
       baseStreamFn: ctx.agent.streamFn,
       shouldPatchModel: isMiMoReasoningAsVisibleTextOpenAICompatibleModel,
     });
-
     // Guard Google-family payloads against invalid negative thinking budgets
     // emitted by upstream model-ID heuristics for Gemini 3.1 variants.
     ctx.agent.streamFn = createGoogleThinkingPayloadWrapper(ctx.agent.streamFn, ctx.thinkingLevel);
@@ -798,6 +797,13 @@ function applyPostPluginStreamWrappers(
       ctx.effectiveExtraParams,
     );
   }
+
+  // DashScope Qwen 3.7 Max can put the final answer in reasoning_content.
+  // Preserve thinking, but surface reasoning-only terminal replies to users.
+  ctx.agent.streamFn = createThinkingOnlyFinalTextWrapper({
+    baseStreamFn: ctx.agent.streamFn,
+    shouldPatchModel: isQwen37MaxReasoningAsVisibleTextOpenAICompatibleModel,
+  });
 
   // MiniMax's Anthropic-compatible stream can leak reasoning_content into the
   // visible reply path because it does not emit native Anthropic thinking
@@ -891,6 +897,17 @@ function isMiMoReasoningAsVisibleTextOpenAICompatibleModel(
     model.api === "openai-completions" &&
     normalizedModelId !== undefined &&
     MIMO_REASONING_AS_VISIBLE_TEXT_MODEL_IDS.has(normalizedModelId)
+  );
+}
+
+function isQwen37MaxReasoningAsVisibleTextOpenAICompatibleModel(
+  model: Parameters<StreamFn>[0],
+): boolean {
+  const normalizedModelId = normalizeDeepSeekV4CandidateId(model.id);
+  return (
+    model.api === "openai-completions" &&
+    model.provider === "dashscope" &&
+    normalizedModelId === "qwen3.7-max"
   );
 }
 

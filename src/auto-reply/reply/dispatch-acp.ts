@@ -12,6 +12,7 @@ import type { AcpRuntimeEvent } from "../../acp/runtime/types.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
+import { appendXPromptContext } from "../../content/prompt-context.js";
 import { logVerbose } from "../../globals.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
@@ -812,13 +813,14 @@ export async function tryDispatchAcpReply(params: {
       !(mediaAttachmentsAreOnlyRecentHistory && inlineAttachments.length > 0)
         ? mediaAttachments
         : inlineAttachments;
-    const turnPromptText =
+    const promptWithRecentHistory =
       attachments === mediaAttachments
         ? appendRecentHistoryImageContext({
             promptText,
             images: resolvedTurnAttachments.recentHistoryImages,
           })
         : promptText;
+    const turnPromptText = await appendXPromptContext(promptWithRecentHistory, { timeoutMs: 4000 });
     preparedTurn = {
       promptText: turnPromptText,
       text: resolveAcpTurnText({

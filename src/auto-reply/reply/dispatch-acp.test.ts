@@ -22,6 +22,10 @@ import type { ReplyDispatcher } from "./reply-dispatcher.js";
 import { buildTestCtx } from "./test-ctx.js";
 import { createAcpSessionMeta, createAcpTestConfig } from "./test-fixtures/acp-runtime.js";
 
+const contentContextMocks = vi.hoisted(() => ({
+  appendXPromptContext: vi.fn(async (prompt: string) => prompt),
+}));
+
 const managerMocks = vi.hoisted(() => ({
   resolveSession: vi.fn(),
   initializeSession: vi.fn(),
@@ -103,6 +107,11 @@ const bindingServiceMocks = vi.hoisted(() => ({
   }),
   listBySession: vi.fn<(sessionKey: string) => SessionBindingRecord[]>(() => []),
   unbind: vi.fn<(input: unknown) => Promise<SessionBindingRecord[]>>(async () => []),
+}));
+
+vi.mock("../../content/prompt-context.js", () => ({
+  appendXPromptContext: (prompt: string, options: unknown) =>
+    contentContextMocks.appendXPromptContext(prompt, options),
 }));
 
 vi.mock("./dispatch-acp-manager.runtime.js", () => ({
@@ -450,6 +459,8 @@ function expectRoutedPayload(callIndex: number, payload: Partial<MockTtsReply>) 
 
 describe("tryDispatchAcpReply", () => {
   beforeEach(() => {
+    contentContextMocks.appendXPromptContext.mockReset();
+    contentContextMocks.appendXPromptContext.mockImplementation(async (prompt: string) => prompt);
     managerMocks.resolveSession.mockReset();
     managerMocks.initializeSession.mockReset();
     managerMocks.initializeSession.mockImplementation(
@@ -520,6 +531,30 @@ describe("tryDispatchAcpReply", () => {
     bindingServiceMocks.unbind.mockReset();
     bindingServiceMocks.unbind.mockResolvedValue([]);
     globalThis.fetch = originalFetch;
+  });
+
+  it("injects untrusted X content into ACP prompt before runTurn", async () => {
+    setReadyAcpResolution();
+    contentContextMocks.appendXPromptContext.mockImplementation(async (prompt: string) =>
+      prompt.includes("https://x.com/u/status/123")
+        ? `<untrusted_x_content url="https://x.com/i/status/123">artifact</untrusted_x_content>\n\n${prompt}`
+        : prompt,
+    );
+
+    await runDispatch({ bodyForAgent: "summarize https://x.com/u/status/123" });
+
+    const text = String(runTurnCall().text);
+    expect(text).toContain("<untrusted_x_content");
+    expect(text).toContain("artifact");
+    expect(text).toContain("summarize https://x.com/u/status/123");
+  });
+
+  it("keeps non-X ACP prompt unchanged through content context hook", async () => {
+    setReadyAcpResolution();
+
+    await runDispatch({ bodyForAgent: "hello world" });
+
+    expect(runTurnCall().text).toBe("hello world");
   });
 
   it("routes default ACP output to the originating channel as a final reply", async () => {
