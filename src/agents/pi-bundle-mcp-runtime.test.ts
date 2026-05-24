@@ -505,4 +505,59 @@ describe("session MCP runtime", () => {
     expect(manager.listSessionIds()).toEqual(["session-no-ttl"]);
     expect(disposed).toStrictEqual([]);
   });
+
+  it("does not block getOrCreate on idle runtime disposal", async () => {
+    let now = 1_000;
+    let releaseDispose: (() => void) | undefined;
+    const disposeStarted: string[] = [];
+    const disposeFinished: string[] = [];
+    const manager = testing.createSessionMcpRuntimeManager({
+      createRuntime: (params) => {
+        let lastUsedAt = now;
+        return {
+          ...makeRuntime([{ toolName: "bundle_probe", description: "Bundle MCP probe" }]),
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          workspaceDir: params.workspaceDir,
+          configFingerprint: params.configFingerprint ?? "fingerprint",
+          get lastUsedAt() {
+            return lastUsedAt;
+          },
+          markUsed: () => {
+            lastUsedAt = now;
+          },
+          dispose: async () => {
+            disposeStarted.push(params.sessionId);
+            await new Promise<void>((resolve) => {
+              releaseDispose = resolve;
+            });
+            disposeFinished.push(params.sessionId);
+          },
+        };
+      },
+      now: () => now,
+      enableIdleSweepTimer: false,
+    });
+
+    await manager.getOrCreate({
+      sessionId: "session-expired",
+      workspaceDir: "/workspace",
+      cfg: { mcp: { servers: {}, sessionIdleTtlMs: 50 } },
+    });
+    await Promise.resolve();
+
+    now += 60;
+    const nextRuntime = await manager.getOrCreate({
+      sessionId: "session-next",
+      workspaceDir: "/workspace",
+      cfg: { mcp: { servers: {}, sessionIdleTtlMs: 50 } },
+    });
+
+    expect(nextRuntime.sessionId).toBe("session-next");
+    expect(disposeStarted).toEqual(["session-expired"]);
+    expect(disposeFinished).toEqual([]);
+
+    releaseDispose?.();
+    await vi.waitFor(() => expect(disposeFinished).toEqual(["session-expired"]));
+  });
 });

@@ -1909,6 +1909,7 @@ export async function runEmbeddedAttempt(
     const defaultModelRef = resolveDefaultModelForAgent({
       cfg: params.config ?? {},
       agentId: sessionAgentId,
+      workspaceDir: effectiveWorkspace,
     });
     const defaultModelLabel = `${defaultModelRef.provider}/${defaultModelRef.model}`;
     const activeProcessSessions = listActiveProcessSessionReferences({

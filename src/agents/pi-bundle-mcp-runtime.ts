@@ -92,17 +92,10 @@ export function createBundleMcpJsonSchemaValidator(): jsonSchemaValidator {
   };
 }
 
-function connectWithTimeout(
-  client: Client,
-  transport: Transport,
-  timeoutMs: number,
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`MCP server connection timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-    client.connect(transport).then(
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    operation.then(
       (value) => {
         clearTimeout(timer);
         resolve(value);
@@ -113,6 +106,26 @@ function connectWithTimeout(
       },
     );
   });
+}
+
+function connectWithTimeout(
+  client: Client,
+  transport: Transport,
+  timeoutMs: number,
+): Promise<void> {
+  return withTimeout(
+    client.connect(transport),
+    timeoutMs,
+    `MCP server connection timed out after ${timeoutMs}ms`,
+  );
+}
+
+function listAllToolsWithTimeout(client: Client, timeoutMs: number): Promise<ListedTool[]> {
+  return withTimeout(
+    listAllTools(client),
+    timeoutMs,
+    `MCP server tools listing timed out after ${timeoutMs}ms`,
+  );
 }
 
 function redactErrorUrls(error: unknown): string {
@@ -269,7 +282,10 @@ export function createSessionMcpRuntime(params: {
               failIfDisposed();
               await connectWithTimeout(client, resolved.transport, resolved.connectionTimeoutMs);
               failIfDisposed();
-              const listedTools = await listAllTools(client);
+              const listedTools = await listAllToolsWithTimeout(
+                client,
+                resolved.connectionTimeoutMs,
+              );
               failIfDisposed();
               const server: McpServerCatalog = {
                 serverName,
@@ -481,10 +497,6 @@ function createSessionMcpRuntimeManager(
   return {
     async getOrCreate(params) {
       const idleTtlMs = resolveSessionMcpRuntimeIdleTtlMs(params.cfg);
-      if (runtimesBySessionId.has(params.sessionId)) {
-        idleTtlMsBySessionId.set(params.sessionId, idleTtlMs);
-      }
-      await sweepIdleRuntimes();
       if (idleTtlMs > 0) {
         ensureIdleSweepTimer();
       }
@@ -504,9 +516,11 @@ function createSessionMcpRuntimeManager(
         ) {
           runtimesBySessionId.delete(params.sessionId);
           await existing.dispose();
+          queueIdleSweep();
         } else {
           existing.markUsed();
           idleTtlMsBySessionId.set(params.sessionId, idleTtlMs);
+          queueIdleSweep();
           return existing;
         }
       }
@@ -544,7 +558,9 @@ function createSessionMcpRuntimeManager(
         configFingerprint: nextFingerprint,
       });
       try {
-        return await created;
+        const runtime = await created;
+        queueIdleSweep();
+        return runtime;
       } finally {
         createInFlight.delete(params.sessionId);
       }

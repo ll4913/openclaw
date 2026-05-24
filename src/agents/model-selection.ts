@@ -216,6 +216,7 @@ export function resolveDefaultModelForAgent(
     cfg: OpenClawConfig;
     agentId?: string;
     allowPluginNormalization?: boolean;
+    workspaceDir?: string;
   } & ModelManifestNormalizationContext,
 ): ModelRef {
   const agentModelOverride = params.agentId
@@ -242,6 +243,7 @@ export function resolveDefaultModelForAgent(
     defaultProvider: DEFAULT_PROVIDER,
     defaultModel: DEFAULT_MODEL,
     allowPluginNormalization: params.allowPluginNormalization,
+    workspaceDir: params.workspaceDir,
     manifestPlugins: params.manifestPlugins,
   });
 }
