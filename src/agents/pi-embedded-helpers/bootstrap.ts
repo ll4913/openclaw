@@ -109,6 +109,18 @@ type TrimBootstrapResult = {
   originalLength: number;
 };
 
+type BootstrapContextFileBuildOptions = {
+  warn?: (message: string) => void;
+  maxChars?: number;
+  totalMaxChars?: number;
+};
+
+type BootstrapContextFileBuildState = {
+  maxChars: number;
+  remainingTotalChars: number;
+  result: EmbeddedContextFile[];
+};
+
 type PolicyDigest = {
   text: string;
   omittedLines: number;
@@ -407,65 +419,104 @@ export async function ensureSessionHeader(params: {
   });
 }
 
-export function buildBootstrapContextFiles(
-  files: WorkspaceBootstrapFile[],
-  opts?: { warn?: (message: string) => void; maxChars?: number; totalMaxChars?: number },
-): EmbeddedContextFile[] {
+function createBootstrapContextFileBuildState(
+  opts?: BootstrapContextFileBuildOptions,
+): BootstrapContextFileBuildState {
   const maxChars = opts?.maxChars ?? DEFAULT_BOOTSTRAP_MAX_CHARS;
   const totalMaxChars = Math.max(
     1,
     Math.floor(opts?.totalMaxChars ?? Math.max(maxChars, DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS)),
   );
-  let remainingTotalChars = totalMaxChars;
-  const result: EmbeddedContextFile[] = [];
-  for (const file of files) {
-    if (remainingTotalChars <= 0) {
-      break;
-    }
-    const pathValue = normalizeOptionalString(file.path) ?? "";
-    if (!pathValue) {
-      opts?.warn?.(
-        `skipping bootstrap file "${file.name}" — missing or invalid "path" field (hook may have used "filePath" instead)`,
-      );
-      continue;
-    }
-    if (file.missing) {
-      const missingText = `[MISSING] Expected at: ${pathValue}`;
-      const cappedMissingText = clampToBudget(missingText, remainingTotalChars);
-      if (!cappedMissingText) {
-        break;
-      }
-      remainingTotalChars = Math.max(0, remainingTotalChars - cappedMissingText.length);
-      result.push({
-        path: pathValue,
-        content: cappedMissingText,
-      });
-      continue;
-    }
-    if (remainingTotalChars < MIN_BOOTSTRAP_FILE_BUDGET_CHARS) {
-      opts?.warn?.(
-        `remaining bootstrap budget is ${remainingTotalChars} chars (<${MIN_BOOTSTRAP_FILE_BUDGET_CHARS}); skipping additional bootstrap files`,
-      );
-      break;
-    }
-    const fileMaxChars = Math.max(1, Math.min(maxChars, remainingTotalChars));
-    const trimmed = trimBootstrapContent(file.content ?? "", file.name, fileMaxChars);
-    const contentWithinBudget = clampToBudget(trimmed.content, remainingTotalChars);
-    if (!contentWithinBudget) {
-      continue;
-    }
-    if (trimmed.truncated || contentWithinBudget.length < trimmed.content.length) {
-      opts?.warn?.(
-        `workspace bootstrap file ${file.name} is ${trimmed.originalLength} chars (limit ${trimmed.maxChars}); truncating in injected context`,
-      );
-    }
-    remainingTotalChars = Math.max(0, remainingTotalChars - contentWithinBudget.length);
-    result.push({
-      path: pathValue,
-      content: contentWithinBudget,
-    });
+  return {
+    maxChars,
+    remainingTotalChars: totalMaxChars,
+    result: [],
+  };
+}
+
+function appendBootstrapContextFile(
+  state: BootstrapContextFileBuildState,
+  file: WorkspaceBootstrapFile,
+  opts?: BootstrapContextFileBuildOptions,
+): boolean {
+  if (state.remainingTotalChars <= 0) {
+    return false;
   }
-  return result;
+  const pathValue = normalizeOptionalString(file.path) ?? "";
+  if (!pathValue) {
+    opts?.warn?.(
+      `skipping bootstrap file "${file.name}" — missing or invalid "path" field (hook may have used "filePath" instead)`,
+    );
+    return true;
+  }
+  if (file.missing) {
+    const missingText = `[MISSING] Expected at: ${pathValue}`;
+    const cappedMissingText = clampToBudget(missingText, state.remainingTotalChars);
+    if (!cappedMissingText) {
+      return false;
+    }
+    state.remainingTotalChars = Math.max(0, state.remainingTotalChars - cappedMissingText.length);
+    state.result.push({
+      path: pathValue,
+      content: cappedMissingText,
+    });
+    return true;
+  }
+  if (state.remainingTotalChars < MIN_BOOTSTRAP_FILE_BUDGET_CHARS) {
+    opts?.warn?.(
+      `remaining bootstrap budget is ${state.remainingTotalChars} chars (<${MIN_BOOTSTRAP_FILE_BUDGET_CHARS}); skipping additional bootstrap files`,
+    );
+    return false;
+  }
+  const fileMaxChars = Math.max(1, Math.min(state.maxChars, state.remainingTotalChars));
+  const trimmed = trimBootstrapContent(file.content ?? "", file.name, fileMaxChars);
+  const contentWithinBudget = clampToBudget(trimmed.content, state.remainingTotalChars);
+  if (!contentWithinBudget) {
+    return true;
+  }
+  if (trimmed.truncated || contentWithinBudget.length < trimmed.content.length) {
+    opts?.warn?.(
+      `workspace bootstrap file ${file.name} is ${trimmed.originalLength} chars (limit ${trimmed.maxChars}); truncating in injected context`,
+    );
+  }
+  state.remainingTotalChars = Math.max(0, state.remainingTotalChars - contentWithinBudget.length);
+  state.result.push({
+    path: pathValue,
+    content: contentWithinBudget,
+  });
+  return true;
+}
+
+export function buildBootstrapContextFiles(
+  files: WorkspaceBootstrapFile[],
+  opts?: BootstrapContextFileBuildOptions,
+): EmbeddedContextFile[] {
+  const state = createBootstrapContextFileBuildState(opts);
+  for (const file of files) {
+    if (!appendBootstrapContextFile(state, file, opts)) {
+      break;
+    }
+  }
+  return state.result;
+}
+
+export async function buildBootstrapContextFilesAsync(
+  files: WorkspaceBootstrapFile[],
+  opts?: BootstrapContextFileBuildOptions & {
+    yieldNow?: () => Promise<void>;
+  },
+): Promise<EmbeddedContextFile[]> {
+  const state = createBootstrapContextFileBuildState(opts);
+  for (let index = 0; index < files.length; index += 1) {
+    if (index > 0) {
+      await opts?.yieldNow?.();
+    }
+    const file = files[index];
+    if (!file || !appendBootstrapContextFile(state, file, opts)) {
+      break;
+    }
+  }
+  return state.result;
 }
 
 export function sanitizeGoogleTurnOrdering(messages: AgentMessage[]): AgentMessage[] {

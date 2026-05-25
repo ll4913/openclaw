@@ -9,6 +9,7 @@ import {
   testing,
   addClientToolsToToolSearchCatalog,
   applyToolSearchCatalog,
+  applyToolSearchCatalogAsync,
   clearToolSearchCatalog,
   createToolSearchCatalogRef,
   createToolSearchTools,
@@ -151,6 +152,32 @@ describe("Tool Search", () => {
     expect(telemetry.searchCount).toBe(1);
     expect(telemetry.describeCount).toBe(1);
     expect(telemetry.callCount).toBe(1);
+  });
+
+  it("cooperatively yields while building large tool catalogs", async () => {
+    const calls: string[] = [];
+    const compacted = await applyToolSearchCatalogAsync({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        ...Array.from({ length: 55 }, (_, index) =>
+          pluginTool(`fake_catalog_${index}`, `Catalog target ${index}`),
+        ),
+      ],
+      config: {
+        tools: {
+          toolSearch: { enabled: true, mode: "tools" },
+        },
+      } as never,
+      sessionId: "session-large-catalog",
+      yieldNow: async () => {
+        calls.push("yield");
+      },
+    });
+
+    expect(compacted.catalogToolCount).toBe(55);
+    expect(calls).toEqual(["yield", "yield"]);
   });
 
   it("scopes catalogs by run id when attempts share a session", async () => {

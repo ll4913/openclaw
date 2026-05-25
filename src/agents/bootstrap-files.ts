@@ -11,6 +11,7 @@ import { shouldIncludeHeartbeatGuidanceForSystemPrompt } from "./heartbeat-syste
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
 import {
   buildBootstrapContextFiles,
+  buildBootstrapContextFilesAsync as buildPiBootstrapContextFilesAsync,
   resolveBootstrapMaxChars,
   resolveBootstrapTotalMaxChars,
 } from "./pi-embedded-helpers.js";
@@ -283,16 +284,20 @@ export async function resolveBootstrapFilesForRun(params: {
   warn?: (message: string) => void;
   contextMode?: BootstrapContextMode;
   runKind?: BootstrapContextRunKind;
+  yieldNow?: () => Promise<void>;
 }): Promise<WorkspaceBootstrapFile[]> {
   const excludeHeartbeatBootstrapFile = shouldExcludeHeartbeatBootstrapFile(params);
   const sessionKey = params.sessionKey ?? params.sessionId;
   const workspaceSetupCompleted = await isWorkspaceSetupCompletedForContext(params.workspaceDir);
+  await params.yieldNow?.();
   const rawFiles = params.sessionKey
     ? await getOrLoadBootstrapFiles({
         workspaceDir: params.workspaceDir,
         sessionKey: params.sessionKey,
+        yieldNow: params.yieldNow,
       })
-    : await loadWorkspaceBootstrapFiles(params.workspaceDir);
+    : await loadWorkspaceBootstrapFiles(params.workspaceDir, { yieldNow: params.yieldNow });
+  await params.yieldNow?.();
   const bootstrapFiles = applyContextModeFilter({
     files: filterCompletedWorkspaceBootstrapFile(
       filterBootstrapFilesForSession(rawFiles, sessionKey),
@@ -311,6 +316,7 @@ export async function resolveBootstrapFilesForRun(params: {
     sessionId: params.sessionId,
     agentId: params.agentId,
   });
+  await params.yieldNow?.();
   const filteredUpdated = filterCompletedWorkspaceBootstrapFile(
     updated,
     workspaceSetupCompleted,
@@ -332,12 +338,13 @@ export async function resolveBootstrapContextForRun(params: {
   warn?: (message: string) => void;
   contextMode?: BootstrapContextMode;
   runKind?: BootstrapContextRunKind;
+  yieldNow?: () => Promise<void>;
 }): Promise<{
   bootstrapFiles: WorkspaceBootstrapFile[];
   contextFiles: EmbeddedContextFile[];
 }> {
   const bootstrapFiles = await resolveBootstrapFilesForRun(params);
-  const contextFiles = buildBootstrapContextForFiles(bootstrapFiles, params);
+  const contextFiles = await buildBootstrapContextForFilesAsync(bootstrapFiles, params);
   return { bootstrapFiles, contextFiles };
 }
 
@@ -353,6 +360,24 @@ export function buildBootstrapContextForFiles(
     maxChars: resolveBootstrapMaxChars(params.config, params.agentId),
     totalMaxChars: resolveBootstrapTotalMaxChars(params.config, params.agentId),
     warn: params.warn,
+  });
+  return contextFiles;
+}
+
+export async function buildBootstrapContextForFilesAsync(
+  bootstrapFiles: WorkspaceBootstrapFile[],
+  params: {
+    config?: OpenClawConfig;
+    agentId?: string | null;
+    warn?: (message: string) => void;
+    yieldNow?: () => Promise<void>;
+  },
+): Promise<EmbeddedContextFile[]> {
+  const contextFiles = await buildPiBootstrapContextFilesAsync(bootstrapFiles, {
+    maxChars: resolveBootstrapMaxChars(params.config, params.agentId),
+    totalMaxChars: resolveBootstrapTotalMaxChars(params.config, params.agentId),
+    warn: params.warn,
+    yieldNow: params.yieldNow,
   });
   return contextFiles;
 }

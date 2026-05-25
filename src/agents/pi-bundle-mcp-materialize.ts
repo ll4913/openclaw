@@ -14,6 +14,8 @@ import type { BundleMcpToolRuntime, SessionMcpRuntime } from "./pi-bundle-mcp-ty
 import { normalizeToolParameterSchema } from "./pi-tools-parameter-schema.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
+const BUNDLE_MCP_MATERIALIZE_YIELD_EVERY = 25;
+
 function toAgentToolResult(params: {
   serverName: string;
   toolName: string;
@@ -66,6 +68,7 @@ export async function materializeBundleMcpToolsForRun(params: {
   runtime: SessionMcpRuntime;
   reservedToolNames?: Iterable<string>;
   disposeRuntime?: () => Promise<void>;
+  yieldNow?: () => Promise<void>;
 }): Promise<BundleMcpToolRuntime> {
   let disposed = false;
   const releaseLease = params.runtime.acquireLease?.();
@@ -91,7 +94,14 @@ export async function materializeBundleMcpToolsForRun(params: {
     return a.serverName.localeCompare(b.serverName);
   });
 
-  for (const tool of sortedCatalogTools) {
+  for (let index = 0; index < sortedCatalogTools.length; index += 1) {
+    if (index > 0 && index % BUNDLE_MCP_MATERIALIZE_YIELD_EVERY === 0) {
+      await params.yieldNow?.();
+    }
+    const tool = sortedCatalogTools[index];
+    if (!tool) {
+      continue;
+    }
     const originalName = tool.toolName.trim();
     if (!originalName) {
       continue;
@@ -151,6 +161,7 @@ export async function createBundleMcpToolRuntime(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
   reservedToolNames?: Iterable<string>;
+  yieldNow?: () => Promise<void>;
   createRuntime?: (params: {
     sessionId: string;
     workspaceDir: string;
@@ -167,6 +178,7 @@ export async function createBundleMcpToolRuntime(params: {
   const materialized = await materializeBundleMcpToolsForRun({
     runtime,
     reservedToolNames: params.reservedToolNames,
+    yieldNow: params.yieldNow,
     disposeRuntime: async () => {
       await runtime.dispose();
     },

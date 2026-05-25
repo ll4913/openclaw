@@ -171,6 +171,28 @@ describe("createBundleMcpToolRuntime", () => {
     ]);
   });
 
+  it("cooperatively yields while materializing large MCP tool catalogs", async () => {
+    const calls: string[] = [];
+    const runtime = await materializeBundleMcpToolsForRun({
+      runtime: makeToolRuntime({
+        tools: Array.from({ length: 55 }, (_, index) => ({
+          serverName: "multi",
+          safeServerName: "multi",
+          toolName: `tool_${String(index).padStart(2, "0")}`,
+          description: `Tool ${index}`,
+          inputSchema: { type: "object", properties: {} },
+          fallbackDescription: `Tool ${index}`,
+        })),
+      }),
+      yieldNow: async () => {
+        calls.push("yield");
+      },
+    });
+
+    expect(runtime.tools).toHaveLength(55);
+    expect(calls).toEqual(["yield", "yield"]);
+  });
+
   it("normalizes local $ref schemas from MCP tools before exposing them", async () => {
     const runtime = await materializeBundleMcpToolsForRun({
       runtime: makeToolRuntime({

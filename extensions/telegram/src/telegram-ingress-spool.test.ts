@@ -202,6 +202,27 @@ describe("Telegram ingress spool", () => {
     });
   });
 
+  it("treats missing processing markers as an already-cleaned completion race", async () => {
+    await withTempSpool(async (spoolDir) => {
+      await writeTelegramSpooledUpdate({
+        spoolDir,
+        update: { update_id: 36, message: { text: "cleanup race" } },
+      });
+      const update = (await listTelegramSpooledUpdates({ spoolDir }))[0];
+      if (!update) {
+        throw new Error("Expected a spooled update");
+      }
+      const claimed = await claimTelegramSpooledUpdate(update);
+      if (!claimed) {
+        throw new Error("Expected a claimed update");
+      }
+      await fs.unlink(claimed.path);
+
+      await expect(deleteTelegramSpooledUpdate(claimed)).resolves.toBeUndefined();
+      expect(await fs.readdir(spoolDir)).toEqual([]);
+    });
+  });
+
   it("recovers stale processing claims without replaying fresh claims", async () => {
     await withTempSpool(async (spoolDir) => {
       await writeTelegramSpooledUpdate({

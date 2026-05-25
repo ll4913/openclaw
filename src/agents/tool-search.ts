@@ -32,6 +32,7 @@ const TOOL_SEARCH_CONTROL_TOOL_NAMES = new Set([
 const DEFAULT_CODE_TIMEOUT_MS = 10_000;
 const DEFAULT_SEARCH_LIMIT = 8;
 const DEFAULT_MAX_SEARCH_LIMIT = 20;
+const TOOL_CATALOG_BUILD_YIELD_EVERY = 25;
 
 type ToolSearchMode = "code" | "tools";
 type CatalogSource = "openclaw" | "mcp" | "client";
@@ -97,6 +98,27 @@ export type ToolSearchCatalogSession = {
 
 export type ToolSearchCatalogRef = {
   current?: ToolSearchCatalogSession;
+};
+
+type ToolCatalogCompactionResult = {
+  tools: AnyAgentTool[];
+  compacted: boolean;
+  catalogToolCount: number;
+  catalogRegistered: boolean;
+};
+
+type ToolCatalogCompactionParams = {
+  tools: AnyAgentTool[];
+  enabled: boolean;
+  sessionId?: string;
+  sessionKey?: string;
+  agentId?: string;
+  runId?: string;
+  catalogRef?: ToolSearchCatalogRef;
+  toolHookContext?: HookContext;
+  isVisibleControlTool: (tool: AnyAgentTool) => boolean;
+  shouldCatalogTool?: (tool: AnyAgentTool) => boolean;
+  yieldNow?: () => Promise<void>;
 };
 
 type CodeModeBridgeMethod = "search" | "describe" | "call";
@@ -746,6 +768,75 @@ export function applyToolSearchCatalog(params: {
   };
 }
 
+export async function applyToolSearchCatalogAsync(params: {
+  tools: AnyAgentTool[];
+  config?: OpenClawConfig;
+  sessionId?: string;
+  sessionKey?: string;
+  agentId?: string;
+  runId?: string;
+  catalogRef?: ToolSearchCatalogRef;
+  toolHookContext?: HookContext;
+  yieldNow?: () => Promise<void>;
+}): Promise<ToolCatalogCompactionResult> {
+  const config = resolveToolSearchConfig(params.config);
+  if (!config.enabled) {
+    return { tools: params.tools, compacted: false, catalogToolCount: 0, catalogRegistered: false };
+  }
+  const hasControlTool = params.tools.some(
+    (tool) =>
+      TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) &&
+      shouldExposeControlTool(tool.name, config.mode),
+  );
+  const key = sessionCatalogKey(params);
+  if (!hasControlTool || (!key && !params.catalogRef)) {
+    return {
+      tools: dropToolSearchControlTools(params.tools),
+      compacted: false,
+      catalogToolCount: 0,
+      catalogRegistered: false,
+    };
+  }
+
+  const visible: AnyAgentTool[] = [];
+  const catalog: ToolSearchCatalogEntry[] = [];
+  for (let index = 0; index < params.tools.length; index += 1) {
+    if (index > 0 && index % TOOL_CATALOG_BUILD_YIELD_EVERY === 0) {
+      await params.yieldNow?.();
+    }
+    const tool = params.tools[index];
+    if (!tool) {
+      continue;
+    }
+    if (TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name)) {
+      if (shouldExposeControlTool(tool.name, config.mode)) {
+        visible.push(tool);
+      }
+      continue;
+    }
+    if (shouldCatalogTool(tool)) {
+      catalog.push(toCatalogEntry(tool, undefined, params.toolHookContext));
+      continue;
+    }
+    visible.push(tool);
+  }
+  registerToolSearchCatalog({
+    sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    runId: params.runId,
+    catalogRef: params.catalogRef,
+    entries: catalog,
+    append: false,
+  });
+  return {
+    tools: visible,
+    compacted: catalog.length > 0,
+    catalogToolCount: catalog.length,
+    catalogRegistered: true,
+  };
+}
+
 export function addClientToolsToToolSearchCatalog(params: {
   tools: ToolDefinition[];
   config?: OpenClawConfig;
@@ -1067,23 +1158,9 @@ export class ToolSearchRuntime {
   }
 }
 
-export function applyToolCatalogCompaction(params: {
-  tools: AnyAgentTool[];
-  enabled: boolean;
-  sessionId?: string;
-  sessionKey?: string;
-  agentId?: string;
-  runId?: string;
-  catalogRef?: ToolSearchCatalogRef;
-  toolHookContext?: HookContext;
-  isVisibleControlTool: (tool: AnyAgentTool) => boolean;
-  shouldCatalogTool?: (tool: AnyAgentTool) => boolean;
-}): {
-  tools: AnyAgentTool[];
-  compacted: boolean;
-  catalogToolCount: number;
-  catalogRegistered: boolean;
-} {
+export function applyToolCatalogCompaction(
+  params: Omit<ToolCatalogCompactionParams, "yieldNow">,
+): ToolCatalogCompactionResult {
   if (!params.enabled) {
     return { tools: params.tools, compacted: false, catalogToolCount: 0, catalogRegistered: false };
   }
@@ -1102,6 +1179,61 @@ export function applyToolCatalogCompaction(params: {
   const catalog: ToolSearchCatalogEntry[] = [];
   const shouldCatalog = params.shouldCatalogTool ?? shouldCatalogTool;
   for (const tool of params.tools) {
+    if (params.isVisibleControlTool(tool)) {
+      visible.push(tool);
+      continue;
+    }
+    if (shouldCatalog(tool)) {
+      catalog.push(toCatalogEntry(tool, undefined, params.toolHookContext));
+      continue;
+    }
+    visible.push(tool);
+  }
+  registerToolSearchCatalog({
+    sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    runId: params.runId,
+    catalogRef: params.catalogRef,
+    entries: catalog,
+    append: false,
+  });
+  return {
+    tools: visible,
+    compacted: catalog.length > 0,
+    catalogToolCount: catalog.length,
+    catalogRegistered: true,
+  };
+}
+
+export async function applyToolCatalogCompactionAsync(
+  params: ToolCatalogCompactionParams,
+): Promise<ToolCatalogCompactionResult> {
+  if (!params.enabled) {
+    return { tools: params.tools, compacted: false, catalogToolCount: 0, catalogRegistered: false };
+  }
+  const hasControlTool = params.tools.some((tool) => params.isVisibleControlTool(tool));
+  const key = sessionCatalogKey(params);
+  if (!hasControlTool || (!key && !params.catalogRef)) {
+    return {
+      tools: params.tools.filter((tool) => !TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name)),
+      compacted: false,
+      catalogToolCount: 0,
+      catalogRegistered: false,
+    };
+  }
+
+  const visible: AnyAgentTool[] = [];
+  const catalog: ToolSearchCatalogEntry[] = [];
+  const shouldCatalog = params.shouldCatalogTool ?? shouldCatalogTool;
+  for (let index = 0; index < params.tools.length; index += 1) {
+    if (index > 0 && index % TOOL_CATALOG_BUILD_YIELD_EVERY === 0) {
+      await params.yieldNow?.();
+    }
+    const tool = params.tools[index];
+    if (!tool) {
+      continue;
+    }
     if (params.isVisibleControlTool(tool)) {
       visible.push(tool);
       continue;

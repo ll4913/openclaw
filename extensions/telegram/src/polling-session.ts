@@ -482,6 +482,9 @@ export class TelegramPollingSession {
       await deleteTelegramSpooledUpdate(params.update);
       return true;
     } catch (err) {
+      if ((err as { code?: string }).code === "ENOENT") {
+        return true;
+      }
       this.opts.log(
         `[telegram][diag] spooled update ${params.update.updateId} completed but processing marker cleanup failed: ${formatErrorMessage(err)}`,
       );

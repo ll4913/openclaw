@@ -4,6 +4,7 @@ import type { ContextEngine } from "../../context-engine/types.js";
 import { OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE } from "../internal-runtime-context.js";
 import {
   assembleHarnessContextEngine,
+  bootstrapHarnessContextEngine,
   finalizeHarnessContextEngineTurn,
 } from "./context-engine-lifecycle.js";
 
@@ -66,6 +67,43 @@ describe("harness context engine lifecycle", () => {
 
     const assembleParams = assemble.mock.calls.at(0)?.[0];
     expect(assembleParams?.messages).toEqual([visibleUser, visibleAssistant]);
+  });
+
+  it("yields around context-engine bootstrap and assemble hooks", async () => {
+    const calls: string[] = [];
+    const yieldNow = vi.fn(async () => {
+      calls.push("yield");
+    });
+    const bootstrap = vi.fn(async () => ({ bootstrapped: true }));
+    const maintain = vi.fn(async () => ({ ok: true }));
+    const assemble = vi.fn(async (params: Parameters<ContextEngine["assemble"]>[0]) => ({
+      messages: params.messages,
+      estimatedTokens: 0,
+    }));
+    const contextEngine = createContextEngine({ bootstrap, maintain, assemble });
+
+    await bootstrapHarnessContextEngine({
+      hadSessionFile: true,
+      contextEngine,
+      sessionId: sessionParams.sessionId,
+      sessionKey: sessionParams.sessionKey,
+      sessionFile: sessionParams.sessionFile,
+      yieldNow,
+      warn: () => {},
+    });
+    await assembleHarnessContextEngine({
+      contextEngine,
+      sessionId: sessionParams.sessionId,
+      sessionKey: sessionParams.sessionKey,
+      messages: [textMessage("user", "hello", 1)],
+      modelId: "gpt-test",
+      yieldNow,
+    });
+
+    expect(bootstrap).toHaveBeenCalledTimes(1);
+    expect(maintain).toHaveBeenCalledTimes(1);
+    expect(assemble).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["yield", "yield", "yield", "yield", "yield"]);
   });
 
   it("keeps hidden runtime-context custom messages out of afterTurn hooks", async () => {

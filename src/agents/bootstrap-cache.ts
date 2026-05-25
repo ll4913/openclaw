@@ -1,4 +1,8 @@
-import { loadWorkspaceBootstrapFiles, type WorkspaceBootstrapFile } from "./workspace.js";
+import {
+  loadWorkspaceBootstrapFiles,
+  type WorkspaceBootstrapFile,
+  type WorkspaceBootstrapLoadOptions,
+} from "./workspace.js";
 
 type BootstrapSnapshot = {
   workspaceDir: string;
@@ -30,11 +34,14 @@ function bootstrapFilesEqual(
 export async function getOrLoadBootstrapFiles(params: {
   workspaceDir: string;
   sessionKey: string;
+  yieldNow?: WorkspaceBootstrapLoadOptions["yieldNow"];
 }): Promise<WorkspaceBootstrapFile[]> {
   const existing = cache.get(params.sessionKey);
   // Refresh per turn so long-lived sessions pick up edits; loadWorkspaceBootstrapFiles
   // handles unchanged file content through its guarded inode/mtime cache.
-  const files = await loadWorkspaceBootstrapFiles(params.workspaceDir);
+  const files = await loadWorkspaceBootstrapFiles(params.workspaceDir, {
+    yieldNow: params.yieldNow,
+  });
   if (
     existing &&
     existing.workspaceDir === params.workspaceDir &&

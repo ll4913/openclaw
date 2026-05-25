@@ -49,8 +49,24 @@ type WorkspaceGuardedReadResult =
   | { ok: true; content: string }
   | { ok: false; reason: "path" | "validation" | "io"; error?: unknown };
 
+export type WorkspaceBootstrapLoadOptions = {
+  yieldNow?: () => Promise<void>;
+};
+
 function workspaceFileIdentity(stat: syncFs.Stats, canonicalPath: string): string {
   return `${canonicalPath}|${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+}
+
+function readFileDescriptorUtf8(fd: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    syncFs.readFile(fd, "utf-8", (error, content) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(content);
+    });
+  });
 }
 
 async function readWorkspaceFileWithGuards(params: {
@@ -76,7 +92,7 @@ async function readWorkspaceFileWithGuards(params: {
   }
 
   try {
-    const content = syncFs.readFileSync(opened.fd, "utf-8");
+    const content = await readFileDescriptorUtf8(opened.fd);
     workspaceFileCache.set(params.filePath, { content, identity });
     return { ok: true, content };
   } catch (error) {
@@ -617,7 +633,10 @@ export async function ensureAgentWorkspace(params?: {
   };
 }
 
-export async function loadWorkspaceBootstrapFiles(dir: string): Promise<WorkspaceBootstrapFile[]> {
+export async function loadWorkspaceBootstrapFiles(
+  dir: string,
+  options?: WorkspaceBootstrapLoadOptions,
+): Promise<WorkspaceBootstrapFile[]> {
   const resolvedDir = resolveUserPath(dir);
 
   const entries: Array<{
@@ -659,7 +678,14 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
   ];
 
   const result: WorkspaceBootstrapFile[] = [];
-  for (const entry of entries) {
+  for (let index = 0; index < entries.length; index += 1) {
+    if (index > 0) {
+      await options?.yieldNow?.();
+    }
+    const entry = entries[index];
+    if (!entry) {
+      continue;
+    }
     if (
       entry.name === DEFAULT_MEMORY_FILENAME &&
       !(await exactWorkspaceEntryExists(resolvedDir, DEFAULT_MEMORY_FILENAME))

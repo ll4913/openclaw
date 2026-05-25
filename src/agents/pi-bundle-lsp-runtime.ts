@@ -394,6 +394,7 @@ export async function createBundleLspToolRuntime(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
   reservedToolNames?: Iterable<string>;
+  yieldNow?: () => Promise<void>;
 }): Promise<BundleLspToolRuntime> {
   const loaded = loadEmbeddedPiLspConfig({
     workspaceDir: params.workspaceDir,
@@ -417,6 +418,7 @@ export async function createBundleLspToolRuntime(params: {
 
   try {
     for (const [serverName, rawServer] of Object.entries(loaded.lspServers)) {
+      await params.yieldNow?.();
       const launch = resolveStdioMcpServerLaunchConfig(rawServer);
       if (!launch.ok) {
         logWarn(`bundle-lsp: skipped server "${serverName}" because ${launch.reason}.`);

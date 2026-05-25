@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   buildBootstrapContextFiles,
+  buildBootstrapContextFilesAsync,
   DEFAULT_BOOTSTRAP_MAX_CHARS,
   DEFAULT_BOOTSTRAP_PROMPT_TRUNCATION_WARNING_MODE,
   DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS,
@@ -165,6 +166,18 @@ describe("buildBootstrapContextFiles", () => {
     expect(totalChars).toBeLessThanOrEqual(DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS);
     expect(result).toHaveLength(3);
     expect(result[2]?.content).toBe("c".repeat(10_000));
+  });
+
+  it("yields between bootstrap files during cooperative async builds", async () => {
+    const calls: string[] = [];
+    const result = await buildBootstrapContextFilesAsync(createLargeBootstrapFiles(), {
+      yieldNow: async () => {
+        calls.push("yield");
+      },
+    });
+
+    expect(result).toHaveLength(3);
+    expect(calls).toEqual(["yield", "yield"]);
   });
 
   it("caps total injected bootstrap characters when totalMaxChars is configured", () => {

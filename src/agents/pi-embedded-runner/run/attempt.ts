@@ -77,7 +77,7 @@ import {
 } from "../../bootstrap-budget.js";
 import {
   FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
-  buildBootstrapContextForFiles,
+  buildBootstrapContextForFilesAsync,
   hasCompletedBootstrapTurn,
   isWorkspaceBootstrapPending,
   makeBootstrapWarn,
@@ -92,7 +92,7 @@ import {
 } from "../../channel-tools.js";
 import {
   addClientToolsToCodeModeCatalog,
-  applyCodeModeCatalog,
+  applyCodeModeCatalogAsync,
   CODE_MODE_EXEC_TOOL_NAME,
   CODE_MODE_WAIT_TOOL_NAME,
   createCodeModeTools,
@@ -194,7 +194,7 @@ import { UNKNOWN_TOOL_THRESHOLD } from "../../tool-loop-detection.js";
 import { normalizeToolName } from "../../tool-policy.js";
 import {
   addClientToolsToToolSearchCatalog,
-  applyToolSearchCatalog,
+  applyToolSearchCatalogAsync,
   clearToolSearchCatalog,
   createToolSearchCatalogRef,
   projectToolSearchTargetTranscriptMessages,
@@ -1338,6 +1338,9 @@ export async function runEmbeddedAttempt(
       type: "run.started",
       ...diagnosticRunBase,
     });
+    const yieldPrep = async () => {
+      await yieldEmbeddedRunPrep();
+    };
     const notePrepProgress = async (reason: string) => {
       emitTrustedDiagnosticEvent({
         type: "run.progress",
@@ -1359,7 +1362,7 @@ export async function runEmbeddedAttempt(
           ),
         );
       }
-      await yieldEmbeddedRunPrep();
+      await yieldPrep();
     };
     const markPrepStage = async (name: string) => {
       prepStages.mark(name);
@@ -1576,6 +1579,7 @@ export async function runEmbeddedAttempt(
         warn: bootstrapWarn,
         contextMode: params.bootstrapContextMode,
         runKind: params.bootstrapContextRunKind,
+        yieldNow: yieldPrep,
       });
       await markPrepStage("bootstrap-files");
       bootstrapRouting = await resolveBootstrapRouting(preloadedBootstrapFiles);
@@ -1608,14 +1612,16 @@ export async function runEmbeddedAttempt(
             warn: bootstrapWarn,
             contextMode: params.bootstrapContextMode,
             runKind: params.bootstrapContextRunKind,
+            yieldNow: yieldPrep,
           }));
         await notePrepProgress("embedded_run:prep:bootstrap-context-files");
         return {
           bootstrapFiles,
-          contextFiles: buildBootstrapContextForFiles(bootstrapFiles, {
+          contextFiles: await buildBootstrapContextForFilesAsync(bootstrapFiles, {
             config: params.config,
             agentId: sessionAgentId,
             warn: bootstrapWarn,
+            yieldNow: yieldPrep,
           }),
         };
       },
@@ -1711,6 +1717,7 @@ export async function runEmbeddedAttempt(
     const bundleMcpRuntime = bundleMcpSessionRuntime
       ? await materializeBundleMcpToolsForRun({
           runtime: bundleMcpSessionRuntime,
+          yieldNow: yieldPrep,
           reservedToolNames: [
             ...tools.map((tool) => tool.name),
             ...(clientTools?.map((tool) => tool.function.name) ?? []),
@@ -1729,6 +1736,7 @@ export async function runEmbeddedAttempt(
       ? await createBundleLspToolRuntime({
           workspaceDir: effectiveWorkspace,
           cfg: params.config,
+          yieldNow: yieldPrep,
           reservedToolNames: [
             ...tools.map((tool) => tool.name),
             ...(clientTools?.map((tool) => tool.function.name) ?? []),
@@ -1813,7 +1821,7 @@ export async function runEmbeddedAttempt(
         })
       : [];
     const toolSearch = codeModeControlsEnabledForRun
-      ? applyCodeModeCatalog({
+      ? await applyCodeModeCatalogAsync({
           tools: [...codeModeTools, ...effectiveTools],
           config: params.config,
           sessionId: params.sessionId,
@@ -1822,8 +1830,9 @@ export async function runEmbeddedAttempt(
           runId: params.runId,
           catalogRef: toolSearchCatalogRef,
           toolHookContext: catalogToolHookContext,
+          yieldNow: yieldPrep,
         })
-      : applyToolSearchCatalog({
+      : await applyToolSearchCatalogAsync({
           tools: effectiveTools,
           config: params.config,
           sessionId: params.sessionId,
@@ -1832,6 +1841,7 @@ export async function runEmbeddedAttempt(
           runId: params.runId,
           catalogRef: toolSearchCatalogRef,
           toolHookContext: catalogToolHookContext,
+          yieldNow: yieldPrep,
         });
     await markPrepStage(
       codeModeControlsEnabledForRun ? "code-mode-catalog" : "tool-search-catalog",
@@ -2230,6 +2240,7 @@ export async function runEmbeddedAttempt(
             config: params.config,
             agentId: sessionAgentId,
           }),
+        yieldNow: yieldPrep,
         warn: (message) => log.warn(message),
       });
       await notePrepProgress("embedded_run:prep:context-engine-bootstrap");
@@ -3177,6 +3188,7 @@ export async function runEmbeddedAttempt(
               availableTools: new Set(effectiveTools.map((tool) => tool.name)),
               citationsMode: params.config?.memory?.citations,
               modelId: params.modelId,
+              yieldNow: yieldPrep,
               ...(params.prompt !== undefined ? { prompt: params.prompt } : {}),
             });
             if (!assembled) {

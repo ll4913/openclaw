@@ -18,6 +18,7 @@ import { optionalStringEnum } from "./schema/typebox.js";
 import {
   addClientToolsToToolCatalog,
   applyToolCatalogCompaction,
+  applyToolCatalogCompactionAsync,
   TOOL_CALL_RAW_TOOL_NAME,
   TOOL_DESCRIBE_RAW_TOOL_NAME,
   TOOL_SEARCH_CODE_MODE_TOOL_NAME,
@@ -937,6 +938,42 @@ export function applyCodeModeCatalog(params: {
         tool.name !== TOOL_CALL_RAW_TOOL_NAME),
   );
   return applyToolCatalogCompaction({
+    ...params,
+    tools,
+    enabled: true,
+    isVisibleControlTool: isCodeModeControlTool,
+    shouldCatalogTool: (tool) => !isCodeModeControlTool(tool),
+  });
+}
+
+export async function applyCodeModeCatalogAsync(params: {
+  tools: AnyAgentTool[];
+  config?: OpenClawConfig;
+  sessionId?: string;
+  sessionKey?: string;
+  agentId?: string;
+  runId?: string;
+  catalogRef?: ToolSearchCatalogRef;
+  toolHookContext?: HookContext;
+  yieldNow?: () => Promise<void>;
+}) {
+  const config = resolveCodeModeConfig(params.config, params.agentId);
+  if (!config.enabled) {
+    return applyToolCatalogCompactionAsync({
+      ...params,
+      enabled: false,
+      isVisibleControlTool: isCodeModeControlTool,
+    });
+  }
+  const tools = params.tools.filter(
+    (tool) =>
+      isCodeModeControlTool(tool) ||
+      (tool.name !== TOOL_SEARCH_CODE_MODE_TOOL_NAME &&
+        tool.name !== TOOL_SEARCH_RAW_TOOL_NAME &&
+        tool.name !== TOOL_DESCRIBE_RAW_TOOL_NAME &&
+        tool.name !== TOOL_CALL_RAW_TOOL_NAME),
+  );
+  return applyToolCatalogCompactionAsync({
     ...params,
     tools,
     enabled: true,

@@ -24,6 +24,7 @@ export async function bootstrapHarnessContextEngine(params: {
   runtimeContext?: ContextEngineRuntimeContext;
   runMaintenance?: typeof runHarnessContextEngineMaintenance;
   config?: SessionWriteLockAcquireTimeoutConfig;
+  yieldNow?: () => Promise<void>;
   warn: (message: string) => void;
 }): Promise<void> {
   if (
@@ -34,11 +35,13 @@ export async function bootstrapHarnessContextEngine(params: {
   }
   try {
     if (typeof params.contextEngine?.bootstrap === "function") {
+      await params.yieldNow?.();
       await params.contextEngine.bootstrap({
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
         sessionFile: params.sessionFile,
       });
+      await params.yieldNow?.();
     }
     await (params.runMaintenance ?? runHarnessContextEngineMaintenance)({
       contextEngine: params.contextEngine,
@@ -50,6 +53,7 @@ export async function bootstrapHarnessContextEngine(params: {
       runtimeContext: params.runtimeContext,
       config: params.config,
     });
+    await params.yieldNow?.();
   } catch (bootstrapErr) {
     params.warn(`context engine bootstrap failed: ${String(bootstrapErr)}`);
   }
@@ -68,11 +72,14 @@ export async function assembleHarnessContextEngine(params: {
   citationsMode?: MemoryCitationsMode;
   modelId: string;
   prompt?: string;
+  yieldNow?: () => Promise<void>;
 }) {
   if (!params.contextEngine) {
     return undefined;
   }
+  await params.yieldNow?.();
   const messages = stripRuntimeContextCustomMessages(params.messages);
+  await params.yieldNow?.();
   return await params.contextEngine.assemble({
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
