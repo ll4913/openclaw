@@ -53,7 +53,7 @@ describe("agent quality gate", () => {
     const report = await runAgentQualityGate({ repoRoot: "/repo" }, healthyDeps());
 
     expect(report.overall).toBe("pass");
-    expect(report.summary).toEqual({ pass: 8, warn: 0, fail: 0 });
+    expect(report.summary).toEqual({ pass: 9, warn: 0, fail: 0 });
     expect(report.checks.map((check) => check.id)).toEqual([
       "gateway-liveness",
       "gateway-readiness",
@@ -61,6 +61,7 @@ describe("agent quality gate", () => {
       "telegram-channels",
       "gateway-log",
       "artifact-integrity",
+      "agent-turn-lifecycle",
       "environment-doctor",
       "regression-coverage",
     ]);
@@ -298,6 +299,58 @@ describe("agent quality gate", () => {
     );
   });
 
+  it("warns on slow or weakly-signaled user-visible turn lifecycle events", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            JSON.stringify({
+              time: "2026-05-21T07:58:00.000Z",
+              level: "warn",
+              message: "[typing] TTL exceeded (60000ms), auto-stopping typing indicator",
+            }),
+            JSON.stringify({
+              time: "2026-05-21T07:59:00.000Z",
+              level: "info",
+              message:
+                "agent turn lifecycle phase=turn_done channel=telegram accountId=main sessionKey=agent:main:telegram:direct:1 elapsedMs=125000 outcome=ok",
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    const check = report.checks.find((entry) => entry.id === "agent-turn-lifecycle");
+    expect(report.overall).toBe("warn");
+    expect(check?.status).toBe("warn");
+    expect(check?.summary).toContain("slow or weakly-signaled");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("slow_or_silent_turn");
+    expect(report.runbook.map((item) => item.id)).toContain("slow_or_silent_turn");
+  });
+
+  it("fails on missing-final or failed user-visible turn lifecycle events", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            JSON.stringify({
+              time: "2026-05-21T07:59:00.000Z",
+              level: "error",
+              message:
+                "agent turn lifecycle phase=turn_error channel=telegram accountId=main sessionKey=agent:main:telegram:direct:1 elapsedMs=61000 outcome=missing_final_response",
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    const check = report.checks.find((entry) => entry.id === "agent-turn-lifecycle");
+    expect(report.overall).toBe("fail");
+    expect(check?.status).toBe("fail");
+    expect(check?.summary).toContain("turn lifecycle failure");
+    expect(report.likelyCauses.map((cause) => cause.id)).toContain("slow_or_silent_turn");
+  });
+
   it("warns when expected ACP and Telegram regression tests are missing", async () => {
     const report = await runAgentQualityGate(
       { repoRoot: "/repo" },
@@ -458,5 +511,32 @@ describe("agent quality gate", () => {
     expect(artifactCheck?.status).toBe("pass");
     expect(artifactCheck?.summary).toContain("historical");
     expect(artifactCheck?.details).toContain("historical: /repo/dist/runtime-historical.js");
+  });
+
+  it("does not fail on ellipsized task-list rows with unverifiable dist paths", async () => {
+    const report = await runAgentQualityGate(
+      { repoRoot: "/repo", sinceMinutes: 15 },
+      healthyDeps({
+        readTextFile: async () =>
+          [
+            "GEMINI_API_KEY=test-gemini",
+            "XAI_API_KEY=test-xai",
+            JSON.stringify({
+              time: "2026-05-21T07:58:00.000Z",
+              level: "info",
+              message:
+                "c158c89f-… cli failed not_applicable agent:opsbot Error: Cannot find module '/repo/dist/plugin-sdk/channel-tar…",
+            }),
+          ].join("\n"),
+      }),
+    );
+
+    const artifactCheck = report.checks.find((entry) => entry.id === "artifact-integrity");
+    const logCheck = report.checks.find((entry) => entry.id === "gateway-log");
+    expect(report.overall).toBe("warn");
+    expect(logCheck?.status).toBe("warn");
+    expect(logCheck?.summary).toContain("recoverable/resolved");
+    expect(artifactCheck?.status).toBe("pass");
+    expect(report.likelyCauses.map((cause) => cause.id)).not.toContain("dist_artifact_missing");
   });
 });

@@ -15,6 +15,7 @@ import type { TtsAutoMode } from "../../config/types.tts.js";
 import { appendXPromptContext } from "../../content/prompt-context.js";
 import { logVerbose } from "../../globals.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
+import { logAgentTurnLifecycle } from "../../infra/agent-turn-lifecycle.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { generateSecureUuid } from "../../infra/secure-random.js";
@@ -766,6 +767,18 @@ export async function tryDispatchAcpReply(params: {
   const acpDispatchStartedAt = Date.now();
   let preparedTurn: AcpPreparedTurn | null = null;
   const requestId = resolveAcpRequestId(params.ctx);
+  logAgentTurnLifecycle({
+    phase: "received",
+    channel:
+      normalizeOptionalLowercaseString(
+        params.ctx.OriginatingChannel ?? params.ctx.Surface ?? params.ctx.Provider,
+      ) ?? "acp",
+    accountId: effectiveDispatchAccountId,
+    agentId: acpAgentId,
+    sessionKey: canonicalSessionKey,
+    requestId,
+    runtime: "acp",
+  });
   try {
     const dispatchPolicyError = resolveAcpDispatchPolicyError(params.cfg);
     if (dispatchPolicyError) {
@@ -854,6 +867,16 @@ export async function tryDispatchAcpReply(params: {
 
     try {
       await delivery.startReplyLifecycle();
+      logAgentTurnLifecycle({
+        phase: "reply_lifecycle_started",
+        channel: normalizedDispatchChannel ?? "acp",
+        accountId: effectiveDispatchAccountId,
+        agentId: acpAgentId,
+        sessionKey: canonicalSessionKey,
+        requestId,
+        runtime: "acp",
+        elapsedMs: Date.now() - acpDispatchStartedAt,
+      });
     } catch (error) {
       logVerbose(`dispatch-acp: start reply lifecycle failed: ${formatErrorMessage(error)}`);
     }
@@ -866,6 +889,20 @@ export async function tryDispatchAcpReply(params: {
       mode: "prompt",
       requestId,
       ...(params.abortSignal ? { signal: params.abortSignal } : {}),
+      onLifecycle: async (event) => {
+        if (event.type === "prompt_submitted") {
+          logAgentTurnLifecycle({
+            phase: "prompt_submitted",
+            channel: normalizedDispatchChannel ?? "acp",
+            accountId: effectiveDispatchAccountId,
+            agentId: acpAgentId,
+            sessionKey: canonicalSessionKey,
+            requestId,
+            runtime: "acp",
+            elapsedMs: event.at - acpDispatchStartedAt,
+          });
+        }
+      },
       onEvent: async (event) => await projector.onEvent(event),
     });
 
@@ -906,6 +943,17 @@ export async function tryDispatchAcpReply(params: {
         ttsAccountId: effectiveDispatchAccountId,
         shouldEmitResolvedIdentityNotice,
       })) || queuedFinal;
+    logAgentTurnLifecycle({
+      phase: "final_delivery_done",
+      channel: normalizedDispatchChannel ?? "acp",
+      accountId: effectiveDispatchAccountId,
+      agentId: acpAgentId,
+      sessionKey: canonicalSessionKey,
+      requestId,
+      runtime: "acp",
+      elapsedMs: Date.now() - acpDispatchStartedAt,
+      outcome: queuedFinal || delivery.hasDeliveredAnyPayload() ? "visible_or_queued" : "missing",
+    });
     if (!queuedFinal && !delivery.hasDeliveredAnyPayload()) {
       const delivered = await delivery.deliver(
         "final",
@@ -918,6 +966,17 @@ export async function tryDispatchAcpReply(params: {
         { skipTts: true },
       );
       queuedFinal = queuedFinal || delivered;
+      logAgentTurnLifecycle({
+        phase: "silent_fallback",
+        channel: normalizedDispatchChannel ?? "acp",
+        accountId: effectiveDispatchAccountId,
+        agentId: acpAgentId,
+        sessionKey: canonicalSessionKey,
+        requestId,
+        runtime: "acp",
+        elapsedMs: Date.now() - acpDispatchStartedAt,
+        outcome: delivered ? "delivered" : "failed",
+      });
     }
 
     const counts = params.dispatcher.getQueuedCounts();
@@ -939,6 +998,17 @@ export async function tryDispatchAcpReply(params: {
     logVerbose(
       `acp-dispatch: session=${sessionKey} outcome=ok latencyMs=${Date.now() - acpDispatchStartedAt} queueDepth=${acpStats.turns.queueDepth} activeRuntimes=${acpStats.runtimeCache.activeSessions}`,
     );
+    logAgentTurnLifecycle({
+      phase: "turn_done",
+      channel: normalizedDispatchChannel ?? "acp",
+      accountId: effectiveDispatchAccountId,
+      agentId: acpAgentId,
+      sessionKey: canonicalSessionKey,
+      requestId,
+      runtime: "acp",
+      elapsedMs: Date.now() - acpDispatchStartedAt,
+      outcome: "ok",
+    });
     params.recordProcessed("completed", { reason: "acp_dispatch" });
     params.markIdle("message_completed");
     return { queuedFinal, counts };
@@ -1012,6 +1082,18 @@ export async function tryDispatchAcpReply(params: {
     logVerbose(
       `acp-dispatch: session=${sessionKey} outcome=error code=${acpError.code} latencyMs=${Date.now() - acpDispatchStartedAt} queueDepth=${acpStats.turns.queueDepth} activeRuntimes=${acpStats.runtimeCache.activeSessions}`,
     );
+    logAgentTurnLifecycle({
+      phase: "turn_error",
+      channel: normalizedDispatchChannel ?? "acp",
+      accountId: effectiveDispatchAccountId,
+      agentId: acpAgentId,
+      sessionKey: canonicalSessionKey,
+      requestId,
+      runtime: "acp",
+      elapsedMs: Date.now() - acpDispatchStartedAt,
+      outcome: delivered ? "error_delivered" : "error_delivery_failed",
+      error: acpError,
+    });
     params.recordProcessed("completed", {
       reason: `acp_error:${normalizeLowercaseStringOrEmpty(acpError.code)}`,
     });

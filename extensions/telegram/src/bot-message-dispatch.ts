@@ -132,6 +132,7 @@ export { getTelegramReplyFenceSizeForTests, resetTelegramReplyFenceForTests };
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 const silentReplyDispatchLogger = createSubsystemLogger("telegram/silent-reply-dispatch");
+const turnLifecycleLogger = createSubsystemLogger("agent/turn-lifecycle");
 
 /** Minimum chars before sending first streaming message (improves push notification UX) */
 const DRAFT_MIN_INITIAL_CHARS = 30;
@@ -373,6 +374,37 @@ function formatProgressAsMarkdownCode(text: string): string {
   return `\`${sanitizeProgressMarkdownText(clipped)}\``;
 }
 
+function logTelegramTurnLifecycle(params: {
+  phase:
+    | "received"
+    | "final_delivery_started"
+    | "final_delivery_done"
+    | "turn_done"
+    | "turn_error"
+    | "silent_fallback";
+  accountId?: string;
+  agentId?: string;
+  sessionKey?: string;
+  elapsedMs?: number;
+  outcome?: string;
+  error?: unknown;
+}) {
+  const parts = [
+    "agent turn lifecycle",
+    `phase=${params.phase}`,
+    "channel=telegram",
+    params.accountId ? `accountId=${params.accountId}` : undefined,
+    params.agentId ? `agentId=${params.agentId}` : undefined,
+    params.sessionKey ? `sessionKey=${params.sessionKey}` : undefined,
+    typeof params.elapsedMs === "number"
+      ? `elapsedMs=${Math.max(0, Math.round(params.elapsedMs))}`
+      : undefined,
+    params.outcome ? `outcome=${params.outcome}` : undefined,
+    params.error ? `error=${formatErrorMessage(params.error)}` : undefined,
+  ];
+  turnLifecycleLogger.info(parts.filter(Boolean).join(" "));
+}
+
 export const dispatchTelegramMessage = async ({
   context,
   bot,
@@ -410,6 +442,14 @@ export const dispatchTelegramMessage = async ({
   } = context;
   const isRoomEvent = ctxPayload.InboundEventKind === "room_event";
   const statusReactionController = isRoomEvent ? null : rawStatusReactionController;
+  logTelegramTurnLifecycle({
+    phase: "received",
+    accountId: route.accountId,
+    agentId: route.agentId,
+    sessionKey: ctxPayload.SessionKey,
+    elapsedMs: 0,
+    outcome: isRoomEvent ? "room_event" : isGroup ? "group" : "direct",
+  });
   const statusReactionTiming = {
     ...DEFAULT_TIMING,
     ...cfg.messages?.statusReactions?.timing,
@@ -1880,6 +1920,14 @@ export const dispatchTelegramMessage = async ({
       });
       sentFallback = result.delivered;
     }
+    logTelegramTurnLifecycle({
+      phase: "silent_fallback",
+      accountId: route.accountId,
+      agentId: route.agentId,
+      sessionKey: ctxPayload.SessionKey,
+      elapsedMs: Date.now() - dispatchStartedAt,
+      outcome: sentFallback ? "delivered" : "failed",
+    });
     silentReplyDispatchLogger.debug("telegram turn ended without visible final response", {
       hasSessionKey: Boolean(policySessionKey),
       hasChatId: chatId != null,
@@ -1890,6 +1938,33 @@ export const dispatchTelegramMessage = async ({
 
   const hasFinalResponse =
     deliverySummary.delivered || sentFallback || suppressSilentReplyFallback || queuedFinal;
+
+  if (finalAnswerDeliveryStarted) {
+    logTelegramTurnLifecycle({
+      phase: "final_delivery_started",
+      accountId: route.accountId,
+      agentId: route.agentId,
+      sessionKey: ctxPayload.SessionKey,
+      elapsedMs: Date.now() - dispatchStartedAt,
+      outcome: finalAnswerDelivered ? "delivered" : "started",
+    });
+  }
+  if (finalAnswerDelivered || deliverySummary.delivered || queuedFinal || sentFallback) {
+    logTelegramTurnLifecycle({
+      phase: "final_delivery_done",
+      accountId: route.accountId,
+      agentId: route.agentId,
+      sessionKey: ctxPayload.SessionKey,
+      elapsedMs: Date.now() - dispatchStartedAt,
+      outcome: finalAnswerDelivered
+        ? "delivered"
+        : queuedFinal
+          ? "queued"
+          : sentFallback
+            ? "fallback"
+            : "delivered_by_channel",
+    });
+  }
 
   if (statusReactionController && !hasFinalResponse) {
     void finalizeTelegramStatusReaction({ outcome: "error", hasFinalResponse: false }).catch(
@@ -1903,6 +1978,15 @@ export const dispatchTelegramMessage = async ({
     !isRoomEvent || deliverySummary.delivered || sentFallback || queuedFinal;
 
   if (!hasFinalResponse) {
+    logTelegramTurnLifecycle({
+      phase: "turn_error",
+      accountId: route.accountId,
+      agentId: route.agentId,
+      sessionKey: ctxPayload.SessionKey,
+      elapsedMs: Date.now() - dispatchStartedAt,
+      outcome: "missing_final_response",
+      error: dispatchError,
+    });
     if (!shouldClearGroupHistory) {
       return;
     }
@@ -1981,4 +2065,13 @@ export const dispatchTelegramMessage = async ({
   if (shouldClearGroupHistory) {
     clearGroupHistory();
   }
+  logTelegramTurnLifecycle({
+    phase: dispatchError ? "turn_error" : "turn_done",
+    accountId: route.accountId,
+    agentId: route.agentId,
+    sessionKey: ctxPayload.SessionKey,
+    elapsedMs: Date.now() - dispatchStartedAt,
+    outcome: sentFallback ? "fallback" : dispatchError ? "error" : "ok",
+    error: dispatchError,
+  });
 };

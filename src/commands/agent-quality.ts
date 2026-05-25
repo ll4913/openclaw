@@ -27,6 +27,7 @@ export type AgentQualityCauseId =
   | "memory_pressure"
   | "provider_auth_error"
   | "rpc_timeout_or_stall"
+  | "slow_or_silent_turn"
   | "transient_transport_disconnect";
 
 export type AgentQualityCause = {
@@ -86,6 +87,7 @@ const DEFAULT_SINCE_MINUTES = 15;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_LOG_DIR = "/tmp/openclaw";
 const LOG_SCAN_MAX_LINES = 5000;
+const SLOW_TURN_WARNING_MS = 120_000;
 const CURRENT_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 const ENV_FILES = [
@@ -330,6 +332,17 @@ function classifyLikelyCauses(checks: AgentQualityCheck[]): AgentQualityCause[] 
         /connect EPERM/u,
       ]),
     ),
+    buildCause(
+      "slow_or_silent_turn",
+      "warn",
+      "User-visible agent turns are slow, missing final delivery, or losing their typing/ACK heartbeat.",
+      findEvidence(lines, [
+        /Agent Turn Lifecycle: .*missing_final_response/u,
+        /Agent Turn Lifecycle: .*slow user-visible turn/u,
+        /Agent Turn Lifecycle: .*typing indicator exceeded/u,
+        /agent turn lifecycle .*phase=turn_error/u,
+      ]),
+    ),
   ];
   return causes.filter((cause): cause is AgentQualityCause => Boolean(cause));
 }
@@ -403,6 +416,15 @@ function buildRunbook(causes: AgentQualityCause[]): AgentQualityRunbookSuggestio
       "Ask the bound ACP worker to retry the same user turn once the stream path settles.",
       "If two retries fail in the same chat, switch to a different configured model/provider for that ACP session.",
       "Run `openclaw agent-quality check --since-minutes 15` and keep the log window if failures cluster.",
+    ],
+  });
+  add({
+    id: "slow_or_silent_turn",
+    title: "Trace the user turn lifecycle before retrying blindly",
+    steps: [
+      "Find the same sessionKey/requestId in `agent turn lifecycle` log lines and compare received -> prompt_submitted -> first_output -> final_delivery_done.",
+      "If received is fast but prompt_submitted is late, inspect queueing, media/context enrichment, and plugin startup work.",
+      "If first_output appears but final_delivery_done is missing, inspect Telegram delivery and ACP final projection before restarting.",
     ],
   });
   return suggestions;
@@ -748,6 +770,8 @@ function addArtifactReference(
 function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }): {
   failures: string[];
   warnings: string[];
+  turnLifecycleFailures: string[];
+  turnLifecycleWarnings: string[];
   artifactReferences: Map<string, string[]>;
   historicalArtifactReferences: Map<string, string[]>;
   scanned: number;
@@ -755,6 +779,8 @@ function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }
   const cutoff = params.nowMs - params.sinceMs;
   const failures: string[] = [];
   const warnings: string[] = [];
+  const turnLifecycleFailures: string[] = [];
+  const turnLifecycleWarnings: string[] = [];
   const artifactReferences = new Map<string, string[]>();
   const historicalArtifactReferences = new Map<string, string[]>();
   let scanned = 0;
@@ -775,6 +801,27 @@ function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }
     }
     scanned += 1;
     addArtifactReference(artifactReferences, extractMissingDistModulePath(message), message);
+    if (/\[typing\] TTL exceeded/u.test(message)) {
+      turnLifecycleWarnings.push(`typing indicator exceeded its heartbeat TTL: ${message}`);
+    }
+    if (/telegram turn ended without visible final response/u.test(message)) {
+      turnLifecycleWarnings.push(`turn ended without visible final response: ${message}`);
+    }
+    if (/agent turn lifecycle /u.test(message)) {
+      if (/phase=turn_error/u.test(message) || /outcome=missing_final_response/u.test(message)) {
+        turnLifecycleFailures.push(message);
+      } else {
+        const elapsedMatch = /\belapsedMs=(\d+)/u.exec(message);
+        const elapsedMs = elapsedMatch ? Number.parseInt(elapsedMatch[1], 10) : 0;
+        if (
+          Number.isFinite(elapsedMs) &&
+          elapsedMs >= SLOW_TURN_WARNING_MS &&
+          /phase=(?:turn_done|final_delivery_done)\b/u.test(message)
+        ) {
+          turnLifecycleWarnings.push(`slow user-visible turn: ${message}`);
+        }
+      }
+    }
     if (/\bchannel exited:/u.test(message)) {
       failures.push(message);
       continue;
@@ -784,7 +831,11 @@ function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }
       continue;
     }
     if (/Cannot find module .*\/dist\//u.test(message)) {
-      failures.push(message);
+      if (extractMissingDistModulePath(message)) {
+        failures.push(message);
+      } else {
+        warnings.push(message);
+      }
       continue;
     }
     if (
@@ -807,9 +858,42 @@ function scanGatewayLog(params: { text: string; sinceMs: number; nowMs: number }
   return {
     failures,
     warnings,
+    turnLifecycleFailures,
+    turnLifecycleWarnings,
     artifactReferences,
     historicalArtifactReferences,
     scanned,
+  };
+}
+
+function buildTurnLifecycleCheck(params: {
+  failures: string[];
+  warnings: string[];
+  sinceMinutes: number;
+}): AgentQualityCheck {
+  if (params.failures.length > 0) {
+    return {
+      id: "agent-turn-lifecycle",
+      name: "Agent Turn Lifecycle",
+      status: "fail",
+      summary: `${params.failures.length} recent user-visible turn lifecycle failure(s).`,
+      details: uniqueLogDetails(params.failures, 8),
+    };
+  }
+  if (params.warnings.length > 0) {
+    return {
+      id: "agent-turn-lifecycle",
+      name: "Agent Turn Lifecycle",
+      status: "warn",
+      summary: `${params.warnings.length} recent slow or weakly-signaled turn lifecycle event(s).`,
+      details: uniqueLogDetails(params.warnings, 8),
+    };
+  }
+  return {
+    id: "agent-turn-lifecycle",
+    name: "Agent Turn Lifecycle",
+    status: "pass",
+    summary: `No slow, missing-final, or heartbeat-expired user turns in the last ${params.sinceMinutes} minute(s).`,
   };
 }
 
@@ -914,6 +998,7 @@ async function analyzeLogs(params: {
 }): Promise<{
   check: AgentQualityCheck;
   artifactCheck: AgentQualityCheck;
+  turnLifecycleCheck: AgentQualityCheck;
   logFile: string | null;
 }> {
   const findLatestLogFile = params.deps.findLatestLogFile ?? defaultFindLatestLogFile;
@@ -930,6 +1015,12 @@ async function analyzeLogs(params: {
       artifactCheck: {
         id: "artifact-integrity",
         name: "Artifact Integrity",
+        status: "warn",
+        summary: "No OpenClaw gateway log file found.",
+      },
+      turnLifecycleCheck: {
+        id: "agent-turn-lifecycle",
+        name: "Agent Turn Lifecycle",
         status: "warn",
         summary: "No OpenClaw gateway log file found.",
       },
@@ -958,10 +1049,16 @@ async function analyzeLogs(params: {
   const staleWarnings = scan.failures.filter(isStaleArtifactFailure);
   const warnings = [...scan.warnings, ...staleWarnings];
   const artifactCheck = buildArtifactIntegrityCheck(artifactFindings, params.sinceMinutes);
+  const turnLifecycleCheck = buildTurnLifecycleCheck({
+    failures: scan.turnLifecycleFailures,
+    warnings: scan.turnLifecycleWarnings,
+    sinceMinutes: params.sinceMinutes,
+  });
   if (activeFailures.length > 0) {
     return {
       logFile,
       artifactCheck,
+      turnLifecycleCheck,
       check: {
         id: "gateway-log",
         name: "Gateway Log Sentinel",
@@ -975,6 +1072,7 @@ async function analyzeLogs(params: {
     return {
       logFile,
       artifactCheck,
+      turnLifecycleCheck,
       check: {
         id: "gateway-log",
         name: "Gateway Log Sentinel",
@@ -987,6 +1085,7 @@ async function analyzeLogs(params: {
   return {
     logFile,
     artifactCheck,
+    turnLifecycleCheck,
     check: {
       id: "gateway-log",
       name: "Gateway Log Sentinel",
@@ -1199,6 +1298,7 @@ export async function runAgentQualityGate(
     logFile = logResult.logFile;
     checks.push(logResult.check);
     checks.push(logResult.artifactCheck);
+    checks.push(logResult.turnLifecycleCheck);
   }
   checks.push(
     await runChecked(

@@ -2,6 +2,7 @@ import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { resolveRuntimeConfigCacheKey } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
+import { logAgentTurnLifecycle } from "../../infra/agent-turn-lifecycle.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { isAcpSessionKey } from "../../sessions/session-key-utils.js";
@@ -905,6 +906,18 @@ export class AcpSessionManager {
                 type: "prompt_submitted",
                 at: Date.now(),
               });
+              logAgentTurnLifecycle({
+                phase: "prompt_submitted",
+                channel: "acp",
+                agentId: meta.agent,
+                sessionKey,
+                requestId: input.requestId,
+                runtime: meta.backend,
+                elapsedMs: Date.now() - turnStartedAt,
+              });
+              let firstOutputLogged = false;
+              const turnLifecycleAgentId = meta.agent;
+              const turnLifecycleBackend = meta.backend;
               const turnPromise = consumeAcpTurnStream({
                 runtime,
                 turn: {
@@ -918,6 +931,19 @@ export class AcpSessionManager {
                 eventGate,
                 onOutputEvent: (event) => {
                   sawTurnOutput = true;
+                  if (!firstOutputLogged) {
+                    firstOutputLogged = true;
+                    logAgentTurnLifecycle({
+                      phase: "first_output",
+                      channel: "acp",
+                      agentId: turnLifecycleAgentId,
+                      sessionKey,
+                      requestId: input.requestId,
+                      runtime: turnLifecycleBackend,
+                      elapsedMs: Date.now() - turnStartedAt,
+                      outcome: event.type,
+                    });
+                  }
                   if (event.type === "text_delta" && event.stream !== "thought" && event.text) {
                     taskProgressSummary = appendBackgroundTaskProgressSummary(
                       taskProgressSummary,
@@ -965,6 +991,16 @@ export class AcpSessionManager {
               }
               this.recordTurnCompletion({
                 startedAt: turnStartedAt,
+              });
+              logAgentTurnLifecycle({
+                phase: "turn_done",
+                channel: "acp",
+                agentId: meta.agent,
+                sessionKey,
+                requestId: input.requestId,
+                runtime: meta.backend,
+                elapsedMs: Date.now() - turnStartedAt,
+                outcome: "completed",
               });
               if (taskContext) {
                 const terminalResult = resolveBackgroundTaskTerminalResult(taskProgressSummary);
@@ -1020,6 +1056,17 @@ export class AcpSessionManager {
               ) {
                 await recordBackendFailure(acpError);
               }
+              logAgentTurnLifecycle({
+                phase: "turn_error",
+                channel: "acp",
+                agentId: meta?.agent,
+                sessionKey,
+                requestId: input.requestId,
+                runtime: meta?.backend,
+                elapsedMs: Date.now() - turnStartedAt,
+                outcome: acpError.code,
+                error: acpError,
+              });
               break;
             } finally {
               if (input.signal && onCallerAbort) {
