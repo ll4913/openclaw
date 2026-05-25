@@ -78,6 +78,7 @@ type CompactEmbeddedPiSessionParams = {
   sessionFile?: string;
   sessionId?: string;
   trigger?: string;
+  force?: boolean;
 };
 
 function requireRefreshQueuedFollowupSessionCall(index = 0) {
@@ -1298,7 +1299,8 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(replyOperation.setPhase).toHaveBeenCalledWith("preflight_compacting");
     const compactCall = requireCompactEmbeddedPiSessionCall();
     expect(compactCall.sessionId).toBe("session");
-    expect(compactCall.trigger).toBe("budget");
+    expect(compactCall.trigger).toBe("overflow");
+    expect(compactCall.force).toBe(true);
     expect(compactCall.currentTokenCount).toBe(10);
     expect(compactCall.sessionFile).toContain("large-session.jsonl");
   });

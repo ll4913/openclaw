@@ -145,8 +145,17 @@ export async function compactEmbeddedPiSession(
   const globalLane = resolveGlobalLane(params.lane);
   const enqueueGlobal =
     params.enqueue ?? ((task, opts) => enqueueCommandInLane(globalLane, task, opts));
+  log.info(
+    `[compaction-diag] queue sessionKey=${params.sessionKey ?? params.sessionId} ` +
+      `trigger=${params.trigger ?? "manual"} force=${params.force === true} ` +
+      `currentTokenCount=${params.currentTokenCount ?? "unknown"}`,
+  );
   return enqueueCommandInLane(sessionLane, () =>
     enqueueGlobal(async () => {
+      log.info(
+        `[compaction-diag] lane started sessionKey=${params.sessionKey ?? params.sessionId} ` +
+          `trigger=${params.trigger ?? "manual"} force=${params.force === true}`,
+      );
       let checkpointSnapshot: CapturedCompactionCheckpointSnapshot | null = null;
       let checkpointSnapshotRetained = false;
       try {
@@ -212,9 +221,10 @@ export async function compactEmbeddedPiSession(
               sessionFile: params.sessionFile,
               tokenBudget: contextTokenBudget,
               currentTokenCount: params.currentTokenCount,
-              compactionTarget: params.trigger === "manual" ? "threshold" : "budget",
+              compactionTarget:
+                params.force === true || params.trigger === "manual" ? "threshold" : "budget",
               customInstructions: params.customInstructions,
-              force: params.trigger === "manual",
+              force: params.force === true || params.trigger === "manual",
               runtimeContext,
             },
             resolveCompactionTimeoutMs(params.config),

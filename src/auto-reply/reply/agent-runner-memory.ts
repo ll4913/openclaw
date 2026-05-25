@@ -55,7 +55,7 @@ import {
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { refreshQueuedFollowupSession, type FollowupRun } from "./queue.js";
 import { isRenderablePayload } from "./reply-payloads-base.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
+import { markReplyOperationProgress, type ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
 type PiEmbeddedRuntime = typeof import("../../agents/pi-embedded.js");
@@ -152,6 +152,10 @@ function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined
     return undefined;
   }
   return Math.ceil(tokens);
+}
+
+async function yieldMemoryMaintenance(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function resolveEffectivePromptTokens(
@@ -534,6 +538,7 @@ async function estimatePromptTokensFromSessionTranscript(params: {
       includeByteSize: true,
       includeUsage: true,
     });
+    await yieldMemoryMaintenance();
     const transcriptBytesTokens =
       typeof snapshot.byteSize === "number" &&
       Number.isFinite(snapshot.byteSize) &&
@@ -542,6 +547,18 @@ async function estimatePromptTokensFromSessionTranscript(params: {
         : undefined;
     const promptTokens = snapshot.usage?.promptTokens;
     const trailingBytesTokens = snapshot.usage?.trailingBytesTokens;
+    if (typeof promptTokens === "number" && Number.isFinite(promptTokens) && promptTokens > 0) {
+      const outputTokens = snapshot.usage?.outputTokens;
+      const usagePromptTokens = Math.ceil(promptTokens) + (trailingBytesTokens ?? 0);
+      return {
+        promptTokens: usagePromptTokens,
+        outputTokens:
+          typeof outputTokens === "number" && Number.isFinite(outputTokens) && outputTokens > 0
+            ? Math.ceil(outputTokens)
+            : undefined,
+        transcriptBytesTokens,
+      };
+    }
     const messages = (await readSessionMessagesAsync(
       sessionId,
       params.storePath,
@@ -552,6 +569,7 @@ async function estimatePromptTokensFromSessionTranscript(params: {
         maxBytes: 1024 * 1024,
       },
     )) as AgentMessage[];
+    await yieldMemoryMaintenance();
     const estimatedMessageTokens = (() => {
       if (messages.length === 0) {
         return undefined;
@@ -559,18 +577,6 @@ async function estimatePromptTokensFromSessionTranscript(params: {
       const tokens = estimateMessagesTokens(messages);
       return Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : undefined;
     })();
-    if (typeof promptTokens === "number" && Number.isFinite(promptTokens) && promptTokens > 0) {
-      const outputTokens = snapshot.usage?.outputTokens;
-      const usagePromptTokens = Math.ceil(promptTokens) + (trailingBytesTokens ?? 0);
-      return {
-        promptTokens: Math.max(usagePromptTokens, estimatedMessageTokens ?? 0),
-        outputTokens:
-          typeof outputTokens === "number" && Number.isFinite(outputTokens) && outputTokens > 0
-            ? Math.ceil(outputTokens)
-            : undefined,
-        transcriptBytesTokens,
-      };
-    }
     const estimatedTokens = estimatedMessageTokens ?? transcriptBytesTokens;
     if (estimatedTokens === undefined) {
       return undefined;
@@ -653,6 +659,9 @@ export async function runPreflightCompactionIfNeeded(params: {
         includeUsage: false,
       })
     : undefined;
+  if (shouldCheckActiveTranscriptBytes) {
+    await yieldMemoryMaintenance();
+  }
   const activeTranscriptBytes = transcriptSizeSnapshot?.byteSize;
   const shouldCompactByTranscriptBytes =
     typeof activeTranscriptBytes === "number" &&
@@ -664,13 +673,26 @@ export async function runPreflightCompactionIfNeeded(params: {
   const transcriptUsageTokens =
     typeof freshPersistedTokens === "number"
       ? undefined
-      : await estimatePromptTokensFromSessionTranscript({
-          sessionId: entry.sessionId,
-          sessionEntry: entry,
-          sessionKey: params.sessionKey ?? params.followupRun.run.sessionKey,
-          sessionFile: entry.sessionFile ?? params.followupRun.run.sessionFile,
-          storePath: params.storePath,
-        });
+      : await (async () => {
+          markReplyOperationProgress(
+            params.replyOperation,
+            "reply.preflight_compaction:transcript_estimate:start",
+          );
+          try {
+            return await estimatePromptTokensFromSessionTranscript({
+              sessionId: entry.sessionId,
+              sessionEntry: entry,
+              sessionKey: params.sessionKey ?? params.followupRun.run.sessionKey,
+              sessionFile: entry.sessionFile ?? params.followupRun.run.sessionFile,
+              storePath: params.storePath,
+            });
+          } finally {
+            markReplyOperationProgress(
+              params.replyOperation,
+              "reply.preflight_compaction:transcript_estimate:end",
+            );
+          }
+        })();
   const stalePersistedPromptTokens = hasPersistedTotalTokens
     ? Math.floor(persistedTotalTokens)
     : undefined;
@@ -720,6 +742,7 @@ export async function runPreflightCompactionIfNeeded(params: {
   }
 
   const compactionTrigger = shouldCompactByTranscriptBytes ? "transcript_bytes" : "tokens";
+  const forceCompaction = compactionTrigger === "transcript_bytes";
   logVerbose(
     `preflightCompaction triggered: sessionKey=${params.sessionKey} ` +
       `tokenCount=${tokenCountForCompaction ?? freshPersistedTokens ?? "undefined"} ` +
@@ -759,7 +782,8 @@ export async function runPreflightCompactionIfNeeded(params: {
       entry.sessionId === params.followupRun.run.sessionId ? entry.agentHarnessId : undefined,
     thinkLevel: params.followupRun.run.thinkLevel,
     bashElevated: params.followupRun.run.bashElevated,
-    trigger: "budget",
+    force: forceCompaction,
+    trigger: forceCompaction ? "overflow" : "budget",
     currentTokenCount: tokenCountForCompaction ?? freshPersistedTokens,
     ownerNumbers: params.followupRun.run.ownerNumbers,
     abortSignal: params.replyOperation.abortSignal,
