@@ -20,6 +20,10 @@ export type AgentTurnLifecycleEvent = {
   agentId?: string;
   sessionKey?: string;
   requestId?: string;
+  originalRequestId?: string;
+  failoverRequestId?: string;
+  failoverSessionKey?: string;
+  failoverAgentId?: string;
   runtime?: string;
   elapsedMs?: number;
   outcome?: string;
@@ -42,6 +46,10 @@ function formatLifecycleEvent(event: AgentTurnLifecycleEvent): string {
     event.agentId ? `agentId=${event.agentId}` : undefined,
     event.sessionKey ? `sessionKey=${event.sessionKey}` : undefined,
     event.requestId ? `requestId=${event.requestId}` : undefined,
+    event.originalRequestId ? `originalRequestId=${event.originalRequestId}` : undefined,
+    event.failoverRequestId ? `failoverRequestId=${event.failoverRequestId}` : undefined,
+    event.failoverSessionKey ? `failoverSessionKey=${event.failoverSessionKey}` : undefined,
+    event.failoverAgentId ? `failoverAgentId=${event.failoverAgentId}` : undefined,
     event.runtime ? `runtime=${event.runtime}` : undefined,
     typeof event.elapsedMs === "number"
       ? `elapsedMs=${Math.max(0, Math.round(event.elapsedMs))}`
@@ -60,6 +68,10 @@ export function logAgentTurnLifecycle(event: AgentTurnLifecycleEvent): void {
       agentId: normalizeField(event.agentId),
       sessionKey: normalizeField(event.sessionKey),
       requestId: normalizeField(event.requestId),
+      originalRequestId: normalizeField(event.originalRequestId),
+      failoverRequestId: normalizeField(event.failoverRequestId),
+      failoverSessionKey: normalizeField(event.failoverSessionKey),
+      failoverAgentId: normalizeField(event.failoverAgentId),
       runtime: normalizeField(event.runtime),
       outcome: normalizeField(event.outcome),
     }),

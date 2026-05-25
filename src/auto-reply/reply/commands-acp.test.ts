@@ -681,13 +681,26 @@ function expectBoundIntroTextToExclude(match: string): void {
 
 function mockBoundThreadSession(options?: {
   sessionKey?: string;
+  label?: string;
   state?: "idle" | "running";
   identity?: AcpSessionIdentity;
   runtimeOptions?: Record<string, unknown>;
 }) {
   const sessionKey = options?.sessionKey ?? defaultAcpSessionKey;
   hoisted.sessionBindingResolveByConversationMock.mockReturnValue(
-    createBoundThreadSession(sessionKey),
+    createSessionBinding({
+      targetSessionKey: sessionKey,
+      conversation: createThreadConversation(),
+      ...(options?.label
+        ? {
+            metadata: {
+              agentId: "codex",
+              boundBy: "user-1",
+              label: options.label,
+            },
+          }
+        : {}),
+    }),
   );
   hoisted.readAcpSessionEntryMock.mockReturnValue(
     createAcpSessionEntry({
@@ -1831,6 +1844,72 @@ describe("/acp command", () => {
     expect(result?.reply?.text).not.toContain("capabilities:");
     expect(result?.reply?.text).not.toContain("acpx record id:");
     expect(hoisted.getStatusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefers the current bound ACP label before global label lookup", async () => {
+    mockBoundThreadSession({
+      label: "mc-codex",
+      runtimeOptions: {
+        model: "gpt-5.5",
+      },
+    });
+    hoisted.callGatewayMock.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === "sessions.resolve") {
+        throw new Error("Multiple sessions found with label: mc-codex");
+      }
+      return { ok: true };
+    });
+
+    const status = await runThreadAcpCommand("/acp status mc-codex", baseCfg);
+
+    expect(status?.reply?.text).toContain("ACP status:");
+    expectMockCallFields(hoisted.getStatusMock, {
+      cfg: baseCfg,
+      sessionKey: defaultAcpSessionKey,
+    });
+    expectGatewayMethodNotCalled("sessions.resolve");
+
+    hoisted.callGatewayMock.mockClear();
+    hoisted.setConfigOptionMock.mockClear();
+    const model = await runThreadAcpCommand("/acp model gpt-5.5 mc-codex", baseCfg);
+
+    expect(model?.reply?.text).toContain("Updated ACP model");
+    expectMockCallFields(hoisted.setConfigOptionMock, {
+      cfg: baseCfg,
+      sessionKey: defaultAcpSessionKey,
+      key: "model",
+      value: "gpt-5.5",
+    });
+    expectGatewayMethodNotCalled("sessions.resolve");
+
+    hoisted.callGatewayMock.mockClear();
+    hoisted.setConfigOptionMock.mockClear();
+    const thinking = await runThreadAcpCommand("/acp set thinking high mc-codex", baseCfg);
+
+    expect(thinking?.reply?.text).toContain("Updated ACP config option");
+    expectMockCallFields(hoisted.setConfigOptionMock, {
+      cfg: baseCfg,
+      sessionKey: defaultAcpSessionKey,
+      key: "thinking",
+      value: "high",
+    });
+    expectGatewayMethodNotCalled("sessions.resolve");
+  });
+
+  it("surfaces ambiguous ACP label targets when no current binding can disambiguate", async () => {
+    hoisted.callGatewayMock.mockImplementation(
+      async (request: { method?: string; params?: Record<string, unknown> }) => {
+        if (request.method === "sessions.resolve" && request.params?.label === "mc-codex") {
+          throw new Error("Multiple sessions found with label: mc-codex");
+        }
+        return null;
+      },
+    );
+
+    const result = await runThreadAcpCommand("/acp status mc-codex", baseCfg);
+
+    expect(result?.reply?.text).toContain("Multiple sessions found with label: mc-codex");
+    expect(hoisted.getStatusMock).not.toHaveBeenCalled();
   });
 
   it("sanitizes leaked task and runtime details in ACP status output", async () => {

@@ -91,6 +91,10 @@ const diagnosticMocks = vi.hoisted(() => ({
   markDiagnosticSessionProgress: vi.fn(),
 }));
 
+const lifecycleMocks = vi.hoisted(() => ({
+  logAgentTurnLifecycle: vi.fn(),
+}));
+
 const sessionMetaMocks = vi.hoisted(() => ({
   readAcpSessionEntry: vi.fn<
     (params: { sessionKey: string; cfg?: OpenClawConfig }) => AcpSessionStoreEntry | null
@@ -209,6 +213,10 @@ vi.mock("./dispatch-acp-session.runtime.js", () => ({
 
 vi.mock("../../logging/diagnostic.js", () => ({
   markDiagnosticSessionProgress: diagnosticMocks.markDiagnosticSessionProgress,
+}));
+
+vi.mock("../../infra/agent-turn-lifecycle.js", () => ({
+  logAgentTurnLifecycle: lifecycleMocks.logAgentTurnLifecycle,
 }));
 
 vi.mock("./dispatch-acp-transcript.runtime.js", () => ({
@@ -458,6 +466,12 @@ function expectRoutedPayload(callIndex: number, payload: Partial<MockTtsReply>) 
   }
 }
 
+function lifecycleEvents(): Array<Record<string, unknown>> {
+  return lifecycleMocks.logAgentTurnLifecycle.mock.calls.map((call) =>
+    requireRecord(call[0], "lifecycle event"),
+  );
+}
+
 describe("tryDispatchAcpReply", () => {
   beforeEach(() => {
     contentContextMocks.appendXPromptContext.mockReset();
@@ -509,6 +523,7 @@ describe("tryDispatchAcpReply", () => {
     mediaUnderstandingMocks.applyMediaUnderstanding.mockResolvedValue(undefined);
     acpAttachmentBuffers.clear();
     diagnosticMocks.markDiagnosticSessionProgress.mockReset();
+    lifecycleMocks.logAgentTurnLifecycle.mockReset();
     sessionMetaMocks.readAcpSessionEntry.mockReset();
     sessionMetaMocks.readAcpSessionEntry.mockReturnValue(null);
     transcriptMocks.persistAcpDispatchTranscript.mockClear();
@@ -831,6 +846,88 @@ describe("tryDispatchAcpReply", () => {
     await dispatchVisibleTurn(onReplyStart);
 
     expect(onReplyStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs first visible ACP output with the source request id", async () => {
+    setReadyAcpResolution();
+    mockVisibleTextTurn("visible answer");
+
+    await runDispatch({
+      bodyForAgent: "hello",
+      ctxOverrides: {
+        Provider: "telegram",
+        Surface: "telegram",
+        OriginatingChannel: "telegram",
+        AccountId: "default",
+        MessageSid: "tg-msg-1",
+      },
+    });
+
+    expect(lifecycleEvents()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "first_output",
+          channel: "telegram",
+          accountId: "default",
+          agentId: "codex-acp",
+          sessionKey,
+          requestId: "tg-msg-1",
+          runtime: "acp",
+        }),
+        expect.objectContaining({
+          phase: "final_delivery_done",
+          requestId: "tg-msg-1",
+          sessionKey,
+          outcome: "visible_or_queued",
+        }),
+        expect.objectContaining({
+          phase: "turn_done",
+          requestId: "tg-msg-1",
+          sessionKey,
+          outcome: "ok",
+        }),
+      ]),
+    );
+  });
+
+  it("sends a visible progress heartbeat for long ACP turns before final output", async () => {
+    vi.useFakeTimers();
+    try {
+      setReadyAcpResolution();
+      let resolveTurn: (() => void) | undefined;
+      managerMocks.runTurn.mockImplementationOnce(
+        async () =>
+          await new Promise<void>((resolve) => {
+            resolveTurn = resolve;
+          }),
+      );
+      const { dispatcher } = createDispatcher();
+
+      const dispatchPromise = runDispatch({
+        bodyForAgent: "long running task",
+        dispatcher,
+        ctxOverrides: {
+          Provider: "telegram",
+          Surface: "telegram",
+          OriginatingChannel: "telegram",
+          AccountId: "default",
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      expect(dispatcher.sendToolResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("任务还在执行"),
+          isFallbackNotice: true,
+        }),
+      );
+
+      resolveTurn?.();
+      await dispatchPromise;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not mark ACP diagnostic progress when diagnostics are disabled", async () => {
@@ -1782,6 +1879,97 @@ describe("tryDispatchAcpReply", () => {
         );
       }),
     ).toBe(true);
+  });
+
+  it("correlates ACP failover lifecycle events with the original request id", async () => {
+    managerMocks.resolveSession.mockReturnValue({
+      kind: "ready",
+      sessionKey,
+      meta: createAcpSessionMeta({
+        agent: "codex",
+        cwd: "/Users/lianglin/Projects/mission-control",
+      }),
+    });
+    managerMocks.runTurn
+      .mockRejectedValueOnce(new Error("stream disconnected before completion"))
+      .mockImplementationOnce(
+        async ({
+          onEvent,
+          onLifecycle,
+        }: {
+          onEvent: (event: unknown) => Promise<void>;
+          onLifecycle?: (event: { type: "prompt_submitted"; at: number }) => Promise<void> | void;
+        }) => {
+          await onLifecycle?.({ type: "prompt_submitted", at: Date.now() });
+          await onEvent({
+            type: "text_delta",
+            text: "Cursor recovered the request.",
+            tag: "agent_message_chunk",
+          });
+          await onEvent({ type: "done" });
+        },
+      );
+    const cfg = createAcpTestConfig({
+      acp: {
+        enabled: true,
+        failover: {
+          enabled: true,
+          agents: {
+            codex: ["cursor"],
+          },
+        },
+      },
+    } as Partial<OpenClawConfig>);
+
+    await runDispatch({
+      bodyForAgent: "recover this task",
+      cfg,
+      shouldRouteToOriginating: true,
+      ctxOverrides: {
+        Provider: "telegram",
+        Surface: "telegram",
+        OriginatingChannel: "telegram",
+        AccountId: "default",
+        MessageSid: "tg-16376",
+      },
+    });
+
+    const fallbackSessionKey = String(runTurnCall(1).sessionKey);
+    const fallbackRequestId = "tg-16376:failover:cursor";
+    expect(lifecycleEvents()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "prompt_submitted",
+          agentId: "cursor",
+          sessionKey: fallbackSessionKey,
+          requestId: fallbackRequestId,
+          originalRequestId: "tg-16376",
+        }),
+        expect.objectContaining({
+          phase: "first_output",
+          agentId: "cursor",
+          sessionKey: fallbackSessionKey,
+          requestId: fallbackRequestId,
+          originalRequestId: "tg-16376",
+        }),
+        expect.objectContaining({
+          phase: "final_delivery_done",
+          agentId: "cursor",
+          sessionKey: fallbackSessionKey,
+          requestId: fallbackRequestId,
+          originalRequestId: "tg-16376",
+          outcome: "visible_or_queued",
+        }),
+        expect.objectContaining({
+          phase: "final_delivery_done",
+          sessionKey,
+          requestId: "tg-16376",
+          failoverRequestId: fallbackRequestId,
+          failoverSessionKey: fallbackSessionKey,
+          outcome: "failover_visible_or_queued",
+        }),
+      ]),
+    );
   });
 
   it("unbinds stale bindings on ACP runTurn missing-metadata failures", async () => {

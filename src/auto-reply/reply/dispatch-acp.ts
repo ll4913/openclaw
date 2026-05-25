@@ -1,4 +1,8 @@
-import type { AcpTurnAttachment, SessionAcpMeta } from "../../acp/control-plane/manager.types.js";
+import type {
+  AcpTurnAttachment,
+  AcpTurnLifecycleEvent,
+  SessionAcpMeta,
+} from "../../acp/control-plane/manager.types.js";
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../../acp/policy.js";
 import { formatAcpRuntimeErrorText } from "../../acp/runtime/error-text.js";
 import { toAcpRuntimeError } from "../../acp/runtime/errors.js";
@@ -61,6 +65,7 @@ const dispatchAcpTtsRuntimeLoader = createLazyImportLoader(
 const dispatchAcpTranscriptRuntimeLoader = createLazyImportLoader(
   () => import("./dispatch-acp-transcript.runtime.js"),
 );
+const ACP_LONG_TURN_PROGRESS_MS = 45_000;
 
 function loadDispatchAcpManagerRuntime() {
   return dispatchAcpManagerRuntimeLoader.load();
@@ -108,6 +113,7 @@ type AcpDispatchSessionManager = {
     mode: "prompt";
     requestId: string;
     signal?: AbortSignal;
+    onLifecycle?: (event: AcpTurnLifecycleEvent) => Promise<void> | void;
     onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void;
   }) => Promise<void>;
 };
@@ -189,6 +195,48 @@ function resolveAcpTurnText(params: {
     );
   }
   return [...guidanceBlocks, params.promptText].filter(Boolean).join("\n\n");
+}
+
+function shouldLogAcpFirstOutput(event: AcpRuntimeEvent): boolean {
+  return (
+    event.type === "text_delta" &&
+    event.stream !== "thought" &&
+    Boolean(normalizeOptionalString(event.text))
+  );
+}
+
+function startLongAcpTurnProgressTimer(params: {
+  delivery: AcpDispatchDeliveryCoordinator;
+  suppressUserDelivery?: boolean;
+  abortSignal?: AbortSignal;
+}): () => void {
+  if (params.suppressUserDelivery) {
+    return () => {};
+  }
+  let stopped = false;
+  const timer = setTimeout(() => {
+    if (stopped || params.abortSignal?.aborted || params.delivery.hasDeliveredAnyPayload()) {
+      return;
+    }
+    void params.delivery
+      .deliver(
+        "tool",
+        {
+          text: prefixSystemMessage("任务还在执行，我会继续等结果。"),
+          isFallbackNotice: true,
+        },
+        { skipTts: true },
+      )
+      .catch((error) => {
+        logVerbose(
+          `dispatch-acp: long-turn progress delivery failed: ${formatErrorMessage(error)}`,
+        );
+      });
+  }, ACP_LONG_TURN_PROGRESS_MS);
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
 }
 
 async function hasBoundConversationForSession(params: {
@@ -390,6 +438,15 @@ async function tryRunAcpFailoverTurn(params: {
     }
 
     const fallbackSessionKey = `agent:${fallbackAgentId}:acp:${generateSecureUuid()}`;
+    const fallbackRequestId = `${params.requestId}:failover:${fallbackAgentId}`;
+    const fallbackStartedAt = Date.now();
+    const lifecycleChannel =
+      normalizeOptionalLowercaseString(
+        params.originatingChannel ??
+          params.ctx.OriginatingChannel ??
+          params.ctx.Surface ??
+          params.ctx.Provider,
+      ) ?? "acp";
     const fallbackDelivery = createAcpDispatchDeliveryCoordinator({
       cfg: params.cfg,
       agentId: fallbackAgentId,
@@ -442,6 +499,18 @@ async function tryRunAcpFailoverTurn(params: {
           `dispatch-acp: start failover reply lifecycle failed: ${formatErrorMessage(error)}`,
         );
       }
+      logAgentTurnLifecycle({
+        phase: "reply_lifecycle_started",
+        channel: lifecycleChannel,
+        accountId: params.effectiveDispatchAccountId,
+        agentId: fallbackAgentId,
+        sessionKey: fallbackSessionKey,
+        requestId: fallbackRequestId,
+        originalRequestId: params.requestId,
+        runtime: "acp",
+        elapsedMs: Date.now() - fallbackStartedAt,
+      });
+      let fallbackFirstOutputLogged = false;
       await params.acpManager.runTurn({
         cfg: params.cfg,
         sessionKey: fallbackSessionKey,
@@ -454,9 +523,40 @@ async function tryRunAcpFailoverTurn(params: {
         }),
         attachments: params.preparedTurn.attachments,
         mode: "prompt",
-        requestId: `${params.requestId}:failover:${fallbackAgentId}`,
+        requestId: fallbackRequestId,
         ...(params.abortSignal ? { signal: params.abortSignal } : {}),
-        onEvent: async (event) => await fallbackProjector.onEvent(event),
+        onLifecycle: async (event) => {
+          if (event.type === "prompt_submitted") {
+            logAgentTurnLifecycle({
+              phase: "prompt_submitted",
+              channel: lifecycleChannel,
+              accountId: params.effectiveDispatchAccountId,
+              agentId: fallbackAgentId,
+              sessionKey: fallbackSessionKey,
+              requestId: fallbackRequestId,
+              originalRequestId: params.requestId,
+              runtime: "acp",
+              elapsedMs: event.at - fallbackStartedAt,
+            });
+          }
+        },
+        onEvent: async (event) => {
+          if (!fallbackFirstOutputLogged && shouldLogAcpFirstOutput(event)) {
+            fallbackFirstOutputLogged = true;
+            logAgentTurnLifecycle({
+              phase: "first_output",
+              channel: lifecycleChannel,
+              accountId: params.effectiveDispatchAccountId,
+              agentId: fallbackAgentId,
+              sessionKey: fallbackSessionKey,
+              requestId: fallbackRequestId,
+              originalRequestId: params.requestId,
+              runtime: "acp",
+              elapsedMs: Date.now() - fallbackStartedAt,
+            });
+          }
+          await fallbackProjector.onEvent(event);
+        },
       });
       await fallbackProjector.flush(true);
       if (params.abortSignal?.aborted) {
@@ -509,12 +609,69 @@ async function tryRunAcpFailoverTurn(params: {
       }
       const counts = params.dispatcher.getQueuedCounts();
       fallbackDelivery.applyRoutedCounts(counts);
+      logAgentTurnLifecycle({
+        phase: "final_delivery_done",
+        channel: lifecycleChannel,
+        accountId: params.effectiveDispatchAccountId,
+        agentId: fallbackAgentId,
+        sessionKey: fallbackSessionKey,
+        requestId: fallbackRequestId,
+        originalRequestId: params.requestId,
+        runtime: "acp",
+        elapsedMs: Date.now() - fallbackStartedAt,
+        outcome:
+          queuedFinal || fallbackDelivery.hasDeliveredAnyPayload()
+            ? "visible_or_queued"
+            : "missing",
+      });
+      logAgentTurnLifecycle({
+        phase: "turn_done",
+        channel: lifecycleChannel,
+        accountId: params.effectiveDispatchAccountId,
+        agentId: fallbackAgentId,
+        sessionKey: fallbackSessionKey,
+        requestId: fallbackRequestId,
+        originalRequestId: params.requestId,
+        runtime: "acp",
+        elapsedMs: Date.now() - fallbackStartedAt,
+        outcome: "ok",
+      });
+      logAgentTurnLifecycle({
+        phase: "final_delivery_done",
+        channel: lifecycleChannel,
+        accountId: params.effectiveDispatchAccountId,
+        agentId: params.primaryAgentId,
+        sessionKey: params.primarySessionKey,
+        requestId: params.requestId,
+        failoverRequestId: fallbackRequestId,
+        failoverSessionKey: fallbackSessionKey,
+        failoverAgentId: fallbackAgentId,
+        runtime: "acp",
+        elapsedMs: Date.now() - fallbackStartedAt,
+        outcome:
+          queuedFinal || fallbackDelivery.hasDeliveredAnyPayload()
+            ? "failover_visible_or_queued"
+            : "failover_missing",
+      });
       logVerbose(
         `dispatch-acp: failover ok primary=${params.primarySessionKey} fallback=${fallbackSessionKey} agent=${fallbackAgentId}`,
       );
       return { queuedFinal, counts };
     } catch (error) {
       await fallbackProjector.flush(true);
+      logAgentTurnLifecycle({
+        phase: "turn_error",
+        channel: lifecycleChannel,
+        accountId: params.effectiveDispatchAccountId,
+        agentId: fallbackAgentId,
+        sessionKey: fallbackSessionKey,
+        requestId: fallbackRequestId,
+        originalRequestId: params.requestId,
+        runtime: "acp",
+        elapsedMs: Date.now() - fallbackStartedAt,
+        outcome: "failover_error",
+        error,
+      });
       logVerbose(
         `dispatch-acp: failover agent ${fallbackAgentId} failed after ${params.primarySessionKey}: ${formatErrorMessage(error)}`,
       );
@@ -893,30 +1050,55 @@ export async function tryDispatchAcpReply(params: {
       logVerbose(`dispatch-acp: start reply lifecycle failed: ${formatErrorMessage(error)}`);
     }
 
-    await acpManager.runTurn({
-      cfg: params.cfg,
-      sessionKey: canonicalSessionKey,
-      text: preparedTurn.text,
-      attachments: preparedTurn.attachments,
-      mode: "prompt",
-      requestId,
-      ...(params.abortSignal ? { signal: params.abortSignal } : {}),
-      onLifecycle: async (event) => {
-        if (event.type === "prompt_submitted") {
-          logAgentTurnLifecycle({
-            phase: "prompt_submitted",
-            channel: normalizedDispatchChannel ?? "acp",
-            accountId: effectiveDispatchAccountId,
-            agentId: acpAgentId,
-            sessionKey: canonicalSessionKey,
-            requestId,
-            runtime: "acp",
-            elapsedMs: event.at - acpDispatchStartedAt,
-          });
-        }
-      },
-      onEvent: async (event) => await projector.onEvent(event),
+    let firstOutputLogged = false;
+    const stopLongTurnProgress = startLongAcpTurnProgressTimer({
+      delivery,
+      suppressUserDelivery: params.suppressUserDelivery,
+      abortSignal: params.abortSignal,
     });
+    try {
+      await acpManager.runTurn({
+        cfg: params.cfg,
+        sessionKey: canonicalSessionKey,
+        text: preparedTurn.text,
+        attachments: preparedTurn.attachments,
+        mode: "prompt",
+        requestId,
+        ...(params.abortSignal ? { signal: params.abortSignal } : {}),
+        onLifecycle: async (event) => {
+          if (event.type === "prompt_submitted") {
+            logAgentTurnLifecycle({
+              phase: "prompt_submitted",
+              channel: normalizedDispatchChannel ?? "acp",
+              accountId: effectiveDispatchAccountId,
+              agentId: acpAgentId,
+              sessionKey: canonicalSessionKey,
+              requestId,
+              runtime: "acp",
+              elapsedMs: event.at - acpDispatchStartedAt,
+            });
+          }
+        },
+        onEvent: async (event) => {
+          if (!firstOutputLogged && shouldLogAcpFirstOutput(event)) {
+            firstOutputLogged = true;
+            logAgentTurnLifecycle({
+              phase: "first_output",
+              channel: normalizedDispatchChannel ?? "acp",
+              accountId: effectiveDispatchAccountId,
+              agentId: acpAgentId,
+              sessionKey: canonicalSessionKey,
+              requestId,
+              runtime: "acp",
+              elapsedMs: Date.now() - acpDispatchStartedAt,
+            });
+          }
+          await projector.onEvent(event);
+        },
+      });
+    } finally {
+      stopLongTurnProgress();
+    }
 
     await projector.flush(true);
     if (params.abortSignal?.aborted) {
