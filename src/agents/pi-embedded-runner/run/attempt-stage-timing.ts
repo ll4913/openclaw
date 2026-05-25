@@ -14,6 +14,10 @@ export type EmbeddedRunStageTracker = {
   snapshot: () => EmbeddedRunStageSummary;
 };
 
+export type EmbeddedRunPrepYieldOptions = {
+  yieldNow?: () => Promise<void>;
+};
+
 export const EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE = {
   workspace: "attempt-workspace",
   prompt: "attempt-prompt",
@@ -51,6 +55,16 @@ export function createEmbeddedRunStageTracker(options?: {
       };
     },
   };
+}
+
+export async function yieldEmbeddedRunPrep(options?: EmbeddedRunPrepYieldOptions): Promise<void> {
+  if (options?.yieldNow) {
+    await options.yieldNow();
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
 }
 
 export function shouldWarnEmbeddedRunStageSummary(

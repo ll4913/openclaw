@@ -201,6 +201,24 @@ function updateOldestAge(current: number | null, candidate: number): number {
   return current === null ? candidate : Math.max(current, candidate);
 }
 
+async function readSpooledUpdateSummaryEntry(
+  filePath: string,
+): Promise<{ parsed: TelegramSpooledUpdate | null; stat: { mtimeMs: number } } | null> {
+  try {
+    const { value } = await readJsonFileWithFallback<unknown>(filePath, null);
+    const stat = await fs.stat(filePath);
+    return {
+      parsed: parseSpooledUpdate(value, filePath),
+      stat,
+    };
+  } catch (err) {
+    if ((err as { code?: string }).code === "ENOENT") {
+      return null;
+    }
+    throw err;
+  }
+}
+
 export function isTelegramSpooledUpdateClaimOwnedByOtherLiveProcess(
   claim: ClaimedTelegramSpooledUpdate,
 ): boolean {
@@ -512,26 +530,28 @@ export async function summarizeTelegramIngressSpool(params: {
       continue;
     }
     if (isProcessingFileName(entry)) {
+      const summaryEntry = await readSpooledUpdateSummaryEntry(filePath);
+      if (!summaryEntry) {
+        continue;
+      }
       processing += 1;
-      const { value } = await readJsonFileWithFallback<unknown>(filePath, null);
-      const parsed = parseSpooledUpdate(value, filePath);
-      const stat = await fs.stat(filePath);
       oldestProcessingAgeMs = updateOldestAge(
         oldestProcessingAgeMs,
-        now - resolveClaimReferenceMs(parsed, stat),
+        now - resolveClaimReferenceMs(summaryEntry.parsed, summaryEntry.stat),
       );
       continue;
     }
     if (!entry.endsWith(".json") || entrySet.has(`${entry}.failed`)) {
       continue;
     }
+    const summaryEntry = await readSpooledUpdateSummaryEntry(filePath);
+    if (!summaryEntry) {
+      continue;
+    }
     pending += 1;
-    const { value } = await readJsonFileWithFallback<unknown>(filePath, null);
-    const parsed = parseSpooledUpdate(value, filePath);
-    const stat = await fs.stat(filePath);
     oldestPendingAgeMs = updateOldestAge(
       oldestPendingAgeMs,
-      now - (parsed?.receivedAt ?? stat.mtimeMs),
+      now - (summaryEntry.parsed?.receivedAt ?? summaryEntry.stat.mtimeMs),
     );
   }
 

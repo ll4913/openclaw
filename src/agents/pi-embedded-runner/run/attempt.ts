@@ -304,6 +304,7 @@ import {
   createEmbeddedRunStageTracker,
   formatEmbeddedRunStageSummary,
   shouldWarnEmbeddedRunStageSummary,
+  yieldEmbeddedRunPrep,
 } from "./attempt-stage-timing.js";
 import { buildAttemptSystemPrompt } from "./attempt-system-prompt.js";
 import {
@@ -1335,6 +1336,18 @@ export async function runEmbeddedAttempt(
       type: "run.started",
       ...diagnosticRunBase,
     });
+    const notePrepProgress = async (reason: string) => {
+      emitTrustedDiagnosticEvent({
+        type: "run.progress",
+        ...diagnosticRunBase,
+        reason,
+      });
+      await yieldEmbeddedRunPrep();
+    };
+    const markPrepStage = async (name: string) => {
+      prepStages.mark(name);
+      await notePrepProgress(`embedded_run:prep:${name}`);
+    };
     const diagnosticRunStartedAt = Date.now();
     let diagnosticRunCompleted = false;
     emitDiagnosticRunCompleted = (outcome, err, extra) => {
@@ -1496,7 +1509,7 @@ export async function runEmbeddedAttempt(
           corePluginToolStages.mark("attempt:tools-allow");
           return filteredTools;
         })();
-    prepStages.mark("core-plugin-tools");
+    await markPrepStage("core-plugin-tools");
     emitCorePluginToolStageSummary("core-plugin-tools", corePluginToolStages.snapshot());
     const bootstrapHasFileAccess = toolsEnabled && toolsRaw.some((tool) => tool.name === "read");
     const bootstrapWarn = makeBootstrapWarn({
@@ -1527,6 +1540,7 @@ export async function runEmbeddedAttempt(
       contextInjectionMode === "continuation-skip" &&
       (params.bootstrapContextRunKind ?? "default") !== "heartbeat" &&
       (await hasCompletedBootstrapTurnForAttempt(params.sessionFile));
+    await notePrepProgress("embedded_run:prep:bootstrap-routing");
     let preloadedBootstrapFiles: WorkspaceBootstrapFile[] | undefined;
     let bootstrapRouting =
       shouldProbeContinuationSkip || isRawModelRun || contextInjectionMode === "never"
@@ -1546,10 +1560,12 @@ export async function runEmbeddedAttempt(
         contextMode: params.bootstrapContextMode,
         runKind: params.bootstrapContextRunKind,
       });
+      await markPrepStage("bootstrap-files");
       bootstrapRouting = await resolveBootstrapRouting(preloadedBootstrapFiles);
     }
     bootstrapRouting ??= await resolveBootstrapRouting(preloadedBootstrapFiles);
     const bootstrapMode = bootstrapRouting.bootstrapMode;
+    await notePrepProgress("embedded_run:prep:bootstrap-context-start");
     const {
       bootstrapFiles: hookAdjustedBootstrapFiles,
       contextFiles: resolvedContextFiles,
@@ -1576,6 +1592,7 @@ export async function runEmbeddedAttempt(
             contextMode: params.bootstrapContextMode,
             runKind: params.bootstrapContextRunKind,
           }));
+        await notePrepProgress("embedded_run:prep:bootstrap-context-files");
         return {
           bootstrapFiles,
           contextFiles: buildBootstrapContextForFiles(bootstrapFiles, {
@@ -1586,7 +1603,7 @@ export async function runEmbeddedAttempt(
         };
       },
     });
-    prepStages.mark("bootstrap-context");
+    await markPrepStage("bootstrap-context");
     const remappedContextFiles = remapInjectedContextFilesToWorkspace({
       files: resolvedContextFiles,
       sourceWorkspaceDir: resolvedWorkspace,
@@ -1671,6 +1688,9 @@ export async function runEmbeddedAttempt(
           cfg: params.config,
         })
       : undefined;
+    if (bundleMcpEnabled) {
+      await markPrepStage("bundle-mcp-runtime");
+    }
     const bundleMcpRuntime = bundleMcpSessionRuntime
       ? await materializeBundleMcpToolsForRun({
           runtime: bundleMcpSessionRuntime,
@@ -1680,6 +1700,9 @@ export async function runEmbeddedAttempt(
           ],
         })
       : undefined;
+    if (bundleMcpSessionRuntime) {
+      await markPrepStage("bundle-mcp-tools");
+    }
     const bundleLspEnabled = shouldCreateBundleLspRuntimeForAttempt({
       toolsEnabled,
       disableTools: params.disableTools || isRawModelRun,
@@ -1696,6 +1719,9 @@ export async function runEmbeddedAttempt(
           ],
         })
       : undefined;
+    if (bundleLspEnabled) {
+      await markPrepStage("bundle-lsp-tools");
+    }
     const filteredBundledTools = applyFinalEffectiveToolPolicy({
       bundledTools: [...(bundleMcpRuntime?.tools ?? []), ...(bundleLspRuntime?.tools ?? [])],
       config: params.config,
@@ -1790,20 +1816,23 @@ export async function runEmbeddedAttempt(
           catalogRef: toolSearchCatalogRef,
           toolHookContext: catalogToolHookContext,
         });
+    await markPrepStage(
+      codeModeControlsEnabledForRun ? "code-mode-catalog" : "tool-search-catalog",
+    );
     effectiveTools = filterLocalModelLeanTools({
       tools: toolSearch.tools,
       config: params.config,
       agentId: sessionAgentId,
     });
     if (toolSearch.compacted) {
-      prepStages.mark(codeModeControlsEnabledForRun ? "code-mode" : "tool-search");
+      await markPrepStage(codeModeControlsEnabledForRun ? "code-mode" : "tool-search");
       log.info(
         codeModeControlsEnabledForRun
           ? `code-mode: cataloged ${toolSearch.catalogToolCount} tools behind exec/wait`
           : `tool-search: cataloged ${toolSearch.catalogToolCount} tools behind compact prompt surface`,
       );
     }
-    prepStages.mark("bundle-tools");
+    await markPrepStage("bundle-tools");
     const explicitToolAllowlistSources = collectAttemptExplicitToolAllowlistSources({
       config: params.config,
       sessionKey: params.sessionKey,
@@ -2084,7 +2113,7 @@ export async function runEmbeddedAttempt(
     });
     const systemPromptOverride = attemptSystemPrompt.systemPromptOverride;
     let systemPromptText = systemPromptOverride();
-    prepStages.mark("system-prompt");
+    await markPrepStage("system-prompt");
 
     const compactionTimeoutMs = resolveCompactionTimeoutMs(params.config);
     const sessionWriteLockOptions = resolveEmbeddedAttemptSessionWriteLockOptions({
@@ -2156,6 +2185,7 @@ export async function runEmbeddedAttempt(
       });
       trackSessionManagerAccess(params.sessionFile);
 
+      await notePrepProgress("embedded_run:prep:context-engine-bootstrap-start");
       await runAttemptContextEngineBootstrap({
         hadSessionFile,
         contextEngine: activeContextEngine,
@@ -2185,6 +2215,7 @@ export async function runEmbeddedAttempt(
           }),
         warn: (message) => log.warn(message),
       });
+      await notePrepProgress("embedded_run:prep:context-engine-bootstrap");
 
       await prepareSessionManagerForRun({
         sessionManager,
@@ -2243,7 +2274,7 @@ export async function runEmbeddedAttempt(
         contextTokenBudget: params.contextTokenBudget,
       });
       applyPiAutoCompactionGuard(piAutoCompactionGuardArgs);
-      prepStages.mark("session-resource-loader");
+      await markPrepStage("session-resource-loader");
 
       // Get hook runner early so it's available when creating tools
       const hookRunner = getGlobalHookRunner();
@@ -2422,7 +2453,7 @@ export async function runEmbeddedAttempt(
         agent: activeSession.agent,
         sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
       });
-      prepStages.mark("agent-session");
+      await markPrepStage("agent-session");
       if (isRawModelRun) {
         // Raw model probes should measure exactly the requested prompt against
         // the selected provider/model. Reset clears restored transcript state
@@ -2761,7 +2792,7 @@ export async function runEmbeddedAttempt(
             `(${params.provider}/${params.modelId})`,
         );
       }
-      prepStages.mark("stream-setup");
+      await markPrepStage("stream-setup");
       emitPrepStageSummary("stream-ready");
 
       const cacheObservabilityEnabled = Boolean(cacheTrace) || log.isEnabled("debug");
@@ -3114,6 +3145,7 @@ export async function runEmbeddedAttempt(
 
         if (activeContextEngine) {
           try {
+            await notePrepProgress("embedded_run:prep:context-engine-assemble-start");
             // Snapshot before assemble: the assemble contract does not require
             // the input array to be treated immutably, so an engine that windows
             // history in place would otherwise leave the precheck reading
@@ -3151,6 +3183,7 @@ export async function runEmbeddedAttempt(
                 `context engine: prepended system prompt addition (${assembled.systemPromptAddition.length} chars)`,
               );
             }
+            await notePrepProgress("embedded_run:prep:context-engine-assemble");
           } catch (assembleErr) {
             log.warn(
               `context engine assemble failed, using pipeline messages: ${String(assembleErr)}`,

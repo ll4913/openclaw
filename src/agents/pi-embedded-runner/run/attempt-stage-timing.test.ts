@@ -4,6 +4,7 @@ import {
   EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE,
   formatEmbeddedRunStageSummary,
   shouldWarnEmbeddedRunStageSummary,
+  yieldEmbeddedRunPrep,
 } from "./attempt-stage-timing.js";
 
 describe("embedded run stage timing", () => {
@@ -52,6 +53,19 @@ describe("embedded run stage timing", () => {
         { totalThresholdMs: 2_000, stageThresholdMs: 1_000 },
       ),
     ).toBe(true);
+  });
+
+  it("awaits an injected prep yield function", async () => {
+    const calls: string[] = [];
+
+    await yieldEmbeddedRunPrep({
+      yieldNow: async () => {
+        await Promise.resolve();
+        calls.push("yielded");
+      },
+    });
+
+    expect(calls).toEqual(["yielded"]);
   });
 
   it("formats summaries compactly for logs", () => {

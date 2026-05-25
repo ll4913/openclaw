@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   claimTelegramSpooledUpdate,
   deleteTelegramSpooledUpdate,
@@ -335,6 +335,63 @@ describe("Telegram ingress spool", () => {
       expect(summary.failed).toBe(1);
       expect(summary.oldestPendingAgeMs).toBeGreaterThan(0);
       expect(summary.oldestProcessingAgeMs).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  it("skips spool entries that disappear while summarizing health surfaces", async () => {
+    await withTempSpool(async (spoolDir) => {
+      await writeTelegramSpooledUpdate({
+        spoolDir,
+        update: { update_id: 49, message: { text: "pending race" } },
+        now: 1_000,
+      });
+      await writeTelegramSpooledUpdate({
+        spoolDir,
+        update: { update_id: 50, message: { text: "processing race" } },
+        now: 2_000,
+      });
+      const processingUpdate = (await listTelegramSpooledUpdates({ spoolDir })).find(
+        (update) => update.updateId === 50,
+      );
+      if (!processingUpdate) {
+        throw new Error("Expected a processing update");
+      }
+      const processingClaim = await claimTelegramSpooledUpdate(processingUpdate);
+      if (!processingClaim) {
+        throw new Error("Expected a processing claim");
+      }
+      const pendingPath = path.join(spoolDir, "0000000000000049.json");
+      const racedPaths = new Set([pendingPath, processingClaim.path]);
+      const originalStat = fs.stat.bind(fs) as typeof fs.stat;
+      const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+        const [target] = args;
+        if (racedPaths.has(String(target))) {
+          racedPaths.delete(String(target));
+          await fs.unlink(String(target)).catch((err: { code?: string }) => {
+            if (err.code !== "ENOENT") {
+              throw err;
+            }
+          });
+          const gone = new Error("spooled update moved during summary") as NodeJS.ErrnoException;
+          gone.code = "ENOENT";
+          throw gone;
+        }
+        return originalStat(...args);
+      });
+      try {
+        const summary = await summarizeTelegramIngressSpool({
+          spoolDir,
+          now: Date.now() + 1_000,
+        });
+
+        expect(summary.pending).toBe(0);
+        expect(summary.processing).toBe(0);
+        expect(summary.failed).toBe(0);
+        expect(summary.oldestPendingAgeMs).toBeNull();
+        expect(summary.oldestProcessingAgeMs).toBeNull();
+      } finally {
+        statSpy.mockRestore();
+      }
     });
   });
 
