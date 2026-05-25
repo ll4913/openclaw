@@ -34,6 +34,12 @@ export function createTelegramPollingStatusPublisher(setStatus?: TelegramPolling
         lastError: error,
       });
     },
+    noteSpoolSummary(spool: NonNullable<ChannelAccountSnapshot["spool"]>) {
+      setStatus?.({
+        mode: "polling",
+        spool,
+      });
+    },
     notePollingStop() {
       setStatus?.({
         mode: "polling",

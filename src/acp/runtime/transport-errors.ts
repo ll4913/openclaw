@@ -1,5 +1,6 @@
 export type AcpTransientTransportErrorKind =
   | "provider_stream_disconnected"
+  | "acp_session_stream_closed"
   | "socket_reset"
   | "provider_fetch_failed"
   | "telegram_transport_socket";
@@ -28,6 +29,11 @@ const TRANSPORT_PATTERNS: TransportPattern[] = [
       /error sending request for url/iu,
       /backend-api\/codex\/responses/u,
     ],
+  },
+  {
+    kind: "acp_session_stream_closed",
+    summary: "ACP session stream closed before completion",
+    patterns: [/\bWritableIterable is closed\b/iu],
   },
   {
     kind: "socket_reset",

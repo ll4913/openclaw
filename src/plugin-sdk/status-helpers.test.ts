@@ -348,6 +348,36 @@ describe("buildRuntimeAccountStatusSnapshot", () => {
         probe: undefined,
       },
     },
+    {
+      name: "preserves runtime spool diagnostics",
+      input: {
+        runtime: {
+          spool: {
+            pending: 2,
+            processing: 1,
+            failed: 3,
+            oldestPendingAgeMs: 4,
+            oldestProcessingAgeMs: 5,
+            activeHandlers: 1,
+            oldestActiveHandlerAgeMs: 6,
+          },
+        },
+      },
+      extra: undefined,
+      expected: {
+        ...defaultRuntimeState,
+        probe: undefined,
+        spool: {
+          pending: 2,
+          processing: 1,
+          failed: 3,
+          oldestPendingAgeMs: 4,
+          oldestProcessingAgeMs: 5,
+          activeHandlers: 1,
+          oldestActiveHandlerAgeMs: 6,
+        },
+      },
+    },
   ])("$name", ({ input, extra, expected }) => {
     expect(buildRuntimeAccountStatusSnapshot(input, extra)).toEqual(expected);
   });

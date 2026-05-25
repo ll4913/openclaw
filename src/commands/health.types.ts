@@ -43,6 +43,7 @@ export type HealthSummary = {
   ts: number;
   durationMs: number;
   eventLoop?: import("../gateway/server/event-loop-health.js").GatewayEventLoopHealth;
+  acp?: import("../acp/control-plane/manager.types.js").AcpManagerObservabilitySnapshot;
   plugins?: PluginHealthSummary;
   modelPricing?: ModelPricingHealthSummary;
   channels: Record<string, ChannelHealthSummary>;

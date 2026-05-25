@@ -48,6 +48,35 @@ function readStringArray(record: Record<string, unknown>, key: string): string[]
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function readSpoolSummary(record: Record<string, unknown>): ChannelAccountSnapshot["spool"] {
+  const spool = isRecord(record.spool) ? record.spool : null;
+  if (!spool) {
+    return undefined;
+  }
+  const summary = {
+    ...(readNumber(spool, "pending") !== undefined
+      ? { pending: readNumber(spool, "pending") }
+      : {}),
+    ...(readNumber(spool, "processing") !== undefined
+      ? { processing: readNumber(spool, "processing") }
+      : {}),
+    ...(readNumber(spool, "failed") !== undefined ? { failed: readNumber(spool, "failed") } : {}),
+    ...(readNullableNumber(spool, "oldestPendingAgeMs") !== undefined
+      ? { oldestPendingAgeMs: readNullableNumber(spool, "oldestPendingAgeMs") }
+      : {}),
+    ...(readNullableNumber(spool, "oldestProcessingAgeMs") !== undefined
+      ? { oldestProcessingAgeMs: readNullableNumber(spool, "oldestProcessingAgeMs") }
+      : {}),
+    ...(readNumber(spool, "activeHandlers") !== undefined
+      ? { activeHandlers: readNumber(spool, "activeHandlers") }
+      : {}),
+    ...(readNullableNumber(spool, "oldestActiveHandlerAgeMs") !== undefined
+      ? { oldestActiveHandlerAgeMs: readNullableNumber(spool, "oldestActiveHandlerAgeMs") }
+      : {}),
+  };
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
 function readCredentialStatus(record: Record<string, unknown>, key: CredentialStatusKey) {
   const value = record[key];
   return value === "available" || value === "configured_unavailable" || value === "missing"
@@ -179,6 +208,7 @@ export function projectSafeChannelAccountSnapshotFields(
   const baseUrl = normalizeOptionalString(record.baseUrl);
   const cliPath = normalizeOptionalString(record.cliPath);
   const dbPath = normalizeOptionalString(record.dbPath);
+  const spool = readSpoolSummary(record);
 
   return {
     ...(name ? { name } : {}),
@@ -224,6 +254,7 @@ export function projectSafeChannelAccountSnapshotFields(
     ...(readNullableNumber(record, "lastRunActivityAt") !== undefined
       ? { lastRunActivityAt: readNullableNumber(record, "lastRunActivityAt") }
       : {}),
+    ...(spool ? { spool } : {}),
     ...(mode ? { mode } : {}),
     ...(dmPolicy ? { dmPolicy } : {}),
     ...(readStringArray(record, "allowFrom")

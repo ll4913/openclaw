@@ -59,4 +59,31 @@ describe("projectSafeChannelAccountSnapshotFields", () => {
       lastTransportActivityAt: 456,
     });
   });
+
+  it("preserves non-secret spool diagnostics", () => {
+    const snapshot = projectSafeChannelAccountSnapshotFields({
+      spool: {
+        pending: 2,
+        processing: 1,
+        failed: 3,
+        oldestPendingAgeMs: 4,
+        oldestProcessingAgeMs: 5,
+        activeHandlers: 1,
+        oldestActiveHandlerAgeMs: 6,
+        ignored: "drop-me",
+      },
+    });
+
+    expect(snapshot).toEqual({
+      spool: {
+        pending: 2,
+        processing: 1,
+        failed: 3,
+        oldestPendingAgeMs: 4,
+        oldestProcessingAgeMs: 5,
+        activeHandlers: 1,
+        oldestActiveHandlerAgeMs: 6,
+      },
+    });
+  });
 });

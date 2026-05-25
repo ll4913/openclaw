@@ -44,6 +44,14 @@ export type ClaimedTelegramSpooledUpdate = TelegramSpooledUpdate & {
   pendingPath: string;
 };
 
+export type TelegramIngressSpoolSummary = {
+  pending: number;
+  processing: number;
+  failed: number;
+  oldestPendingAgeMs: number | null;
+  oldestProcessingAgeMs: number | null;
+};
+
 function normalizeAccountId(accountId?: string) {
   const trimmed = accountId?.trim();
   if (!trimmed) {
@@ -173,6 +181,24 @@ function processExists(pid: number): boolean {
 
 function isFreshClaimOwner(claim: TelegramSpooledUpdateClaimOwner): boolean {
   return Date.now() - claim.claimedAt < TELEGRAM_SPOOLED_UPDATE_PROCESSING_STALE_MS;
+}
+
+function resolveClaimReferenceMs(
+  parsed: TelegramSpooledUpdate | null,
+  stat: { mtimeMs: number },
+): number {
+  return Math.min(parsed?.claim?.claimedAt ?? stat.mtimeMs, stat.mtimeMs);
+}
+
+function isClaimOwnerProcessGone(claim: TelegramSpooledUpdate | null): boolean {
+  return Boolean(claim?.claim && !processExists(claim.claim.processPid));
+}
+
+function updateOldestAge(current: number | null, candidate: number): number {
+  if (!Number.isFinite(candidate) || candidate < 0) {
+    return current ?? 0;
+  }
+  return current === null ? candidate : Math.max(current, candidate);
 }
 
 export function isTelegramSpooledUpdateClaimOwnedByOtherLiveProcess(
@@ -424,12 +450,13 @@ export async function recoverStaleTelegramSpooledUpdateClaims(params: {
       }
       throw err;
     }
-    if (now - stat.mtimeMs < staleMs) {
+    const { value } = await readJsonFileWithFallback<unknown>(claimedPath, null);
+    const parsed = parseSpooledUpdate(value, claimedPath);
+    const claimReferenceMs = resolveClaimReferenceMs(parsed, stat);
+    if (!isClaimOwnerProcessGone(parsed) && now - claimReferenceMs < staleMs) {
       continue;
     }
     if (params.shouldRecover) {
-      const { value } = await readJsonFileWithFallback<unknown>(claimedPath, null);
-      const parsed = parseSpooledUpdate(value, claimedPath);
       if (
         parsed &&
         !(await params.shouldRecover({
@@ -448,4 +475,71 @@ export async function recoverStaleTelegramSpooledUpdateClaims(params: {
     recovered += 1;
   }
   return recovered;
+}
+
+export async function summarizeTelegramIngressSpool(params: {
+  spoolDir: string;
+  now?: number;
+}): Promise<TelegramIngressSpoolSummary> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(params.spoolDir);
+  } catch (err) {
+    if ((err as { code?: string }).code === "ENOENT") {
+      return {
+        pending: 0,
+        processing: 0,
+        failed: 0,
+        oldestPendingAgeMs: null,
+        oldestProcessingAgeMs: null,
+      };
+    }
+    throw err;
+  }
+
+  const now = params.now ?? Date.now();
+  const entrySet = new Set(entries);
+  let pending = 0;
+  let processing = 0;
+  let failed = 0;
+  let oldestPendingAgeMs: number | null = null;
+  let oldestProcessingAgeMs: number | null = null;
+
+  for (const entry of entries) {
+    const filePath = path.join(params.spoolDir, entry);
+    if (entry.endsWith(".json.failed")) {
+      failed += 1;
+      continue;
+    }
+    if (isProcessingFileName(entry)) {
+      processing += 1;
+      const { value } = await readJsonFileWithFallback<unknown>(filePath, null);
+      const parsed = parseSpooledUpdate(value, filePath);
+      const stat = await fs.stat(filePath);
+      oldestProcessingAgeMs = updateOldestAge(
+        oldestProcessingAgeMs,
+        now - resolveClaimReferenceMs(parsed, stat),
+      );
+      continue;
+    }
+    if (!entry.endsWith(".json") || entrySet.has(`${entry}.failed`)) {
+      continue;
+    }
+    pending += 1;
+    const { value } = await readJsonFileWithFallback<unknown>(filePath, null);
+    const parsed = parseSpooledUpdate(value, filePath);
+    const stat = await fs.stat(filePath);
+    oldestPendingAgeMs = updateOldestAge(
+      oldestPendingAgeMs,
+      now - (parsed?.receivedAt ?? stat.mtimeMs),
+    );
+  }
+
+  return {
+    pending,
+    processing,
+    failed,
+    oldestPendingAgeMs,
+    oldestProcessingAgeMs,
+  };
 }

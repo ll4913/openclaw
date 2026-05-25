@@ -115,6 +115,7 @@ export type AcpManagerObservabilitySnapshot = {
     failed: number;
     averageLatencyMs: number;
     maxLatencyMs: number;
+    oldestActiveAgeMs?: number;
   };
   errorsByCode: Record<string, number>;
 };
@@ -129,6 +130,7 @@ export type ActiveTurnState = {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
   abortController: AbortController;
+  startedAt: number;
   cancelPromise?: Promise<void>;
 };
 

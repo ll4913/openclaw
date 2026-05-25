@@ -767,6 +767,63 @@ describe("AcpSessionManager", () => {
     }
   });
 
+  it("reports active turn age in the observability snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtimeState = createRuntime();
+      hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+        id: "acpx",
+        runtime: runtimeState.runtime,
+      });
+      hoisted.readAcpSessionEntryMock.mockReturnValue({
+        sessionKey: "agent:codex:acp:active-age",
+        storeSessionKey: "agent:codex:acp:active-age",
+        acp: readySessionMeta(),
+      });
+
+      let turnStarted = false;
+      runtimeState.runTurn.mockImplementation(async function* () {
+        turnStarted = true;
+        await new Promise(() => {});
+        yield { type: "done" as const };
+      });
+
+      const manager = new AcpSessionManager();
+      const cfg = {
+        ...baseCfg,
+        agents: {
+          defaults: {
+            timeoutSeconds: 1,
+          },
+        },
+      } as OpenClawConfig;
+
+      const turn = manager.runTurn({
+        cfg,
+        sessionKey: "agent:codex:acp:active-age",
+        text: "age probe",
+        mode: "prompt",
+        requestId: "r-active-age",
+      });
+      void turn.catch(() => undefined);
+      await vi.waitFor(() => expect(turnStarted).toBe(true), { interval: 1 });
+
+      await vi.advanceTimersByTimeAsync(750);
+
+      const snapshot = manager.getObservabilitySnapshot(cfg);
+      expect(snapshot.turns.active).toBe(1);
+      expect(snapshot.turns.oldestActiveAgeMs).toBeGreaterThanOrEqual(700);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expectRejectedRecord(turn, {
+        code: "ACP_TURN_FAILED",
+        message: "ACP turn timed out after 1s.",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps timed-out runtime handles counted until timeout cleanup finishes", async () => {
     vi.useFakeTimers();
     try {

@@ -32,7 +32,9 @@ import {
   recoverStaleTelegramSpooledUpdateClaims,
   releaseTelegramSpooledUpdateClaim,
   resolveTelegramIngressSpoolDir,
+  summarizeTelegramIngressSpool,
   type ClaimedTelegramSpooledUpdate,
+  type TelegramIngressSpoolSummary,
   type TelegramSpooledUpdate,
 } from "./telegram-ingress-spool.js";
 import {
@@ -202,6 +204,11 @@ type SpooledUpdateHandlerState = {
 type SpooledUpdateDrainResult = {
   blockedByLane: Set<string>;
   started: number;
+};
+
+type TelegramSpooledUpdateRuntimeSummary = TelegramIngressSpoolSummary & {
+  activeHandlers: number;
+  oldestActiveHandlerAgeMs: number | null;
 };
 
 // Account health restarts create a new session in the same process while an old
@@ -548,6 +555,39 @@ export class TelegramPollingSession {
     return laneKeys;
   }
 
+  #activeSpooledUpdateRuntimeSummary(params: {
+    spoolDir: string;
+    now: number;
+  }): Pick<TelegramSpooledUpdateRuntimeSummary, "activeHandlers" | "oldestActiveHandlerAgeMs"> {
+    let activeHandlers = 0;
+    let oldestActiveHandlerAgeMs: number | null = null;
+    for (const [handlerKey, handler] of activeSpooledUpdateHandlersByLane) {
+      if (!isSpooledUpdateHandlerKeyForSpool(handlerKey, params.spoolDir)) {
+        continue;
+      }
+      activeHandlers += 1;
+      const ageMs = Math.max(0, params.now - handler.startedAt);
+      oldestActiveHandlerAgeMs =
+        oldestActiveHandlerAgeMs === null ? ageMs : Math.max(oldestActiveHandlerAgeMs, ageMs);
+    }
+    return { activeHandlers, oldestActiveHandlerAgeMs };
+  }
+
+  async #publishSpooledUpdateRuntimeSummary(spoolDir: string): Promise<void> {
+    const now = Date.now();
+    try {
+      const spool = await summarizeTelegramIngressSpool({ spoolDir, now });
+      this.#status.noteSpoolSummary({
+        ...spool,
+        ...this.#activeSpooledUpdateRuntimeSummary({ spoolDir, now }),
+      });
+    } catch (err) {
+      this.opts.log(
+        `[telegram][diag] isolated polling spool summary failed: ${formatErrorMessage(err)}`,
+      );
+    }
+  }
+
   async #drainSpooledUpdates(params: {
     bot: TelegramBot;
     spoolDir: string;
@@ -697,10 +737,12 @@ export class TelegramPollingSession {
       activeSpooledUpdateHandlersByLane.get(handler.handlerKey) === activeHandler
     ) {
       this.opts.log(
-        `[telegram][diag] timed out spooled update ${handler.updateId} did not stop within ${formatDurationPrecise(this.#spooledUpdateHandlerAbortGraceMs)} after reply abort; keeping lane ${handler.laneKey} guarded.`,
+        `[telegram][diag] timed out spooled update ${handler.updateId} did not stop within ${formatDurationPrecise(this.#spooledUpdateHandlerAbortGraceMs)} after reply abort; releasing lane ${handler.laneKey} and restarting isolated ingress so later updates can drain.`,
       );
       this.#status.notePollingError(message);
-      return { handlerKey: handler.handlerKey, restart: false };
+      activeSpooledUpdateHandlersByLane.delete(handler.handlerKey);
+      this.#spooledUpdateHandlerKeys.delete(handler.handlerKey);
+      return { handlerKey: handler.handlerKey, restart: true };
     }
     if (activeSpooledUpdateHandlersByLane.get(handler.handlerKey) === activeHandler) {
       activeSpooledUpdateHandlersByLane.delete(handler.handlerKey);
@@ -818,6 +860,7 @@ export class TelegramPollingSession {
       drainActive = true;
       try {
         const drain = await this.#drainSpooledUpdates({ bot, spoolDir });
+        await this.#publishSpooledUpdateRuntimeSummary(spoolDir);
         consecutiveDrainFailures = 0;
         for (const handlerKey of stalledBacklogKeys) {
           if (

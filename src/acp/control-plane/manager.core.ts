@@ -219,6 +219,14 @@ export class AcpSessionManager {
     const completedTurns = this.turnLatencyStats.completed + this.turnLatencyStats.failed;
     const averageLatencyMs =
       completedTurns > 0 ? Math.round(this.turnLatencyStats.totalMs / completedTurns) : 0;
+    const now = Date.now();
+    const oldestActiveAgeMs = [...this.activeTurnBySession.values()].reduce<number | undefined>(
+      (oldest, turn) => {
+        const ageMs = Math.max(0, now - turn.startedAt);
+        return oldest === undefined ? ageMs : Math.max(oldest, ageMs);
+      },
+      undefined,
+    );
     return {
       runtimeCache: {
         activeSessions: this.runtimeCache.size(),
@@ -233,6 +241,7 @@ export class AcpSessionManager {
         failed: this.turnLatencyStats.failed,
         averageLatencyMs,
         maxLatencyMs: this.turnLatencyStats.maxMs,
+        ...(oldestActiveAgeMs !== undefined ? { oldestActiveAgeMs } : {}),
       },
       errorsByCode: Object.fromEntries(
         [...this.errorCountsByCode.entries()].toSorted(([a], [b]) => a.localeCompare(b)),
@@ -893,6 +902,7 @@ export class AcpSessionManager {
                 runtime,
                 handle,
                 abortController: internalAbortController,
+                startedAt: Date.now(),
               };
               this.activeTurnBySession.set(actorKey, activeTurn);
               activeTurnStarted = true;

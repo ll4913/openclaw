@@ -35,6 +35,16 @@ describe("formatAcpRuntimeErrorText", () => {
     expect(text).not.toContain("https://chatgpt.com/backend-api/codex/responses");
   });
 
+  it("summarizes closed WritableIterable ACP streams without exposing the raw runtime error", () => {
+    const text = formatAcpRuntimeErrorText(
+      new AcpRuntimeError("ACP_TURN_FAILED", "Error: T: WritableIterable is closed"),
+    );
+
+    expect(text).toContain("ACP session stream closed before completion");
+    expect(text).toContain("I did not drop this message");
+    expect(text).not.toContain("WritableIterable");
+  });
+
   it("surfaces redacted numeric RequestError details in runtime failure text", () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const requestError = Object.assign(new Error("Internal error"), {

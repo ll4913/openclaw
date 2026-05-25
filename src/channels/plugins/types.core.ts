@@ -214,6 +214,15 @@ export type ChannelAccountSnapshot = {
   lastStopAt?: number | null;
   lastInboundAt?: number | null;
   lastOutboundAt?: number | null;
+  spool?: {
+    pending?: number;
+    processing?: number;
+    failed?: number;
+    oldestPendingAgeMs?: number | null;
+    oldestProcessingAgeMs?: number | null;
+    activeHandlers?: number;
+    oldestActiveHandlerAgeMs?: number | null;
+  };
   busy?: boolean;
   activeRuns?: number;
   lastRunActivityAt?: number | null;

@@ -1,3 +1,4 @@
+import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { inspectChannelAccount } from "../channels/account-inspection.js";
 import {
@@ -576,6 +577,7 @@ export async function getHealthSnapshot(params?: {
     ts: Date.now(),
     durationMs: Date.now() - start,
     ...(params?.eventLoop ? { eventLoop: params.eventLoop } : {}),
+    acp: getAcpSessionManager().getObservabilitySnapshot(cfg),
     ...(pluginHealth ? { plugins: pluginHealth } : {}),
     modelPricing: getGatewayModelPricingHealth({ enabled: isGatewayModelPricingEnabled(cfg) }),
     channels,

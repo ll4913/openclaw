@@ -42,6 +42,7 @@ type RuntimeLifecycleSnapshot = {
   lastError?: string | null;
   lastInboundAt?: number | null;
   lastOutboundAt?: number | null;
+  spool?: ChannelAccountSnapshot["spool"];
 };
 
 type StatusSnapshotExtra = Record<string, unknown>;
@@ -319,6 +320,7 @@ export function buildRuntimeAccountStatusSnapshot<TExtra extends StatusSnapshotE
       ? { lastTransportActivityAt: runtime.lastTransportActivityAt }
       : {}),
     ...(typeof runtime?.healthState === "string" ? { healthState: runtime.healthState } : {}),
+    ...(runtime?.spool ? { spool: runtime.spool } : {}),
     ...(extra ?? ({} as TExtra)),
   };
 }
