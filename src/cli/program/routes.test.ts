@@ -15,6 +15,9 @@ const channelsStatusCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const agentsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const runPluginsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const callGatewayMock = vi.hoisted(() => vi.fn(async () => ({ ok: true, durationMs: 12 })));
+const readBestEffortConfigMock = vi.hoisted(() =>
+  vi.fn(async () => ({ gateway: { port: 18789 } })),
+);
 const pluginsCliLoadedMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../config-cli.js", () => ({
@@ -65,6 +68,10 @@ vi.mock("../plugins-list-command.js", () => ({
 vi.mock("../../gateway/call.js", () => ({
   callGateway: callGatewayMock,
   formatGatewayTransportErrorJson: vi.fn(() => null),
+}));
+
+vi.mock("../../config/read-best-effort-config.runtime.js", () => ({
+  readBestEffortConfig: readBestEffortConfigMock,
 }));
 
 vi.mock("../plugins-cli.js", () => {
@@ -225,8 +232,10 @@ describe("program routes", () => {
           "--json",
         ]),
       ).resolves.toBe(true);
+      expect(readBestEffortConfigMock).toHaveBeenCalled();
       expect(callGatewayMock).toHaveBeenCalledWith({
         method: "health",
+        config: { gateway: { port: 18789 } },
         url: "ws://127.0.0.1:18789",
         token: "abc",
         password: "def",

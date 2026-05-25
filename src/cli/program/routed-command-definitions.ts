@@ -109,9 +109,14 @@ export const routedCommandDefinitions = {
     parseArgs: parseGatewayHealthRouteArgs,
     runParsedArgs: async (args) => {
       try {
-        const { callGateway } = await import("../../gateway/call.js");
+        const [{ readBestEffortConfig }, { callGateway }] = await Promise.all([
+          import("../../config/read-best-effort-config.runtime.js"),
+          import("../../gateway/call.js"),
+        ]);
+        const config = await readBestEffortConfig();
         const result = await callGateway({
           method: "health",
+          config,
           url: args.rpc.url,
           token: args.rpc.token,
           password: args.rpc.password,
