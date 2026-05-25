@@ -780,6 +780,7 @@ export async function runPreflightCompactionIfNeeded(params: {
     model: params.followupRun.run.model,
     agentHarnessId:
       entry.sessionId === params.followupRun.run.sessionId ? entry.agentHarnessId : undefined,
+    contextTokenBudget: contextWindowTokens,
     thinkLevel: params.followupRun.run.thinkLevel,
     bashElevated: params.followupRun.run.bashElevated,
     force: forceCompaction,

@@ -75,6 +75,7 @@ type CompactEmbeddedPiSessionParams = {
   sessionKey?: string;
   sandboxSessionKey?: string;
   currentTokenCount?: number;
+  contextTokenBudget?: number;
   sessionFile?: string;
   sessionId?: string;
   trigger?: string;
@@ -864,6 +865,7 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
     const compactCall = requireCompactEmbeddedPiSessionCall();
     expect(compactCall.currentTokenCount).toBe(347_000);
+    expect(compactCall.contextTokenBudget).toBe(350_000);
   });
 
   it("still compacts when a fresh persisted token total is over the threshold", async () => {
