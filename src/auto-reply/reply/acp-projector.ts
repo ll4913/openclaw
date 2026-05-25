@@ -125,7 +125,11 @@ export function sanitizeVisibleAcpAssistantText(input: string): string {
   ) {
     return "⚠️ Validation failed: could not connect to the target address.";
   }
-  return "⚠️ Tool execution failed. Check the verification log or retry.";
+  return renderRecoverableStepFailure();
+}
+
+function renderRecoverableStepFailure(): string {
+  return "⚠️ 这一步没有跑通，正在继续处理。";
 }
 
 function sanitizeVisibleAssistantTextWithPending(params: {
@@ -182,6 +186,7 @@ function classifyToolSummary(event: Extract<AcpRuntimeEvent, { type: "tool_call"
     | "script"
     | "test"
     | "build"
+    | "code_check"
     | "git"
     | "openclaw"
     | "file_read"
@@ -222,6 +227,9 @@ function classifyToolSummary(event: Extract<AcpRuntimeEvent, { type: "tool_call"
   if (/\b(?:pnpm|npm|yarn|bun)\b.*\bbuild\b|\brun(?:ning)? builds?\b|\bbuild\b/iu.test(lower)) {
     return { action: "build", internal };
   }
+  if (/\b(?:typecheck|type-check|tsgo|lint|oxlint|format:check|check:types?)\b/iu.test(lower)) {
+    return { action: "code_check", internal };
+  }
   if (/\bgit\b/iu.test(lower)) {
     return { action: "git", internal };
   }
@@ -234,7 +242,7 @@ function classifyToolSummary(event: Extract<AcpRuntimeEvent, { type: "tool_call"
   if (/\bedit\s+files?\b|\bedit\b.*\bfiles?\b|\bfile\s+edit\b/iu.test(lower)) {
     return { action: "file_edit", internal };
   }
-  if (/\bopenclaw\b/iu.test(lower)) {
+  if (/\b(?:openclaw|gateway|acp)\b/iu.test(lower)) {
     return { action: "openclaw", internal };
   }
   return { action: "tool", internal };
@@ -250,12 +258,12 @@ function renderClassifiedToolSummary(params: {
     params.status === "completed" || params.status === "done" || params.status === "success";
 
   if (failed && params.successClaimSeen && params.action === "page_validation") {
-    return "⚠️ Validation not confirmed: a later page validation failed, so the earlier success claim needs another check.";
+    return "⚠️ 前面的验证结论需要复核：后续页面验证没有通过，正在换方式确认。";
   }
 
   if (params.action === "page_validation") {
     if (failed) {
-      return "⚠️ Page validation failed: could not confirm the target content appeared.";
+      return "⚠️ 页面验证没有通过，正在换方式确认。";
     }
     if (completed) {
       return "✅ Page validation completed.";
@@ -265,7 +273,7 @@ function renderClassifiedToolSummary(params: {
 
   if (params.action === "script") {
     if (failed) {
-      return "⚠️ Script execution failed. Check the verification log or retry.";
+      return "⚠️ 命令没有完成，正在换一种方式继续。";
     }
     if (completed) {
       return "✅ Script execution completed.";
@@ -275,7 +283,7 @@ function renderClassifiedToolSummary(params: {
 
   if (params.action === "test") {
     if (failed) {
-      return "⚠️ Tests failed.";
+      return "⚠️ 测试检查没有通过，正在定位原因。";
     }
     if (completed) {
       return "✅ Tests completed.";
@@ -285,7 +293,7 @@ function renderClassifiedToolSummary(params: {
 
   if (params.action === "build") {
     if (failed) {
-      return "⚠️ Build failed.";
+      return "⚠️ 构建检查没有通过，正在定位原因。";
     }
     if (completed) {
       return "✅ Build completed.";
@@ -293,9 +301,19 @@ function renderClassifiedToolSummary(params: {
     return "🛠️ Running build.";
   }
 
+  if (params.action === "code_check") {
+    if (failed) {
+      return "⚠️ 代码检查没有通过，正在定位原因。";
+    }
+    if (completed) {
+      return "✅ Code check completed.";
+    }
+    return "🛠️ Running code check.";
+  }
+
   if (params.action === "git") {
     if (failed) {
-      return "⚠️ Git operation failed.";
+      return "⚠️ Git 操作没有完成，正在检查阻塞原因。";
     }
     if (completed) {
       return "✅ Git operation completed.";
@@ -305,7 +323,7 @@ function renderClassifiedToolSummary(params: {
 
   if (params.action === "openclaw") {
     if (failed) {
-      return "⚠️ OpenClaw check failed.";
+      return "⚠️ 运行状态检查没有通过，正在继续诊断。";
     }
     if (completed) {
       return "✅ OpenClaw check completed.";
@@ -315,7 +333,7 @@ function renderClassifiedToolSummary(params: {
 
   if (params.action === "file_read") {
     if (failed) {
-      return "⚠️ File read failed.";
+      return renderRecoverableStepFailure();
     }
     if (completed) {
       return "✅ Finished reading files.";
@@ -325,7 +343,7 @@ function renderClassifiedToolSummary(params: {
 
   if (params.action === "file_write") {
     if (failed) {
-      return "⚠️ File write failed.";
+      return renderRecoverableStepFailure();
     }
     if (completed) {
       return "✅ Finished writing files.";
@@ -335,7 +353,7 @@ function renderClassifiedToolSummary(params: {
 
   if (params.action === "file_edit") {
     if (failed) {
-      return "⚠️ File edit failed.";
+      return renderRecoverableStepFailure();
     }
     if (completed) {
       return "✅ Finished editing files.";
@@ -344,7 +362,7 @@ function renderClassifiedToolSummary(params: {
   }
 
   if (failed) {
-    return "⚠️ Tool execution failed.";
+    return renderRecoverableStepFailure();
   }
   if (completed) {
     return "✅ Tool execution completed.";

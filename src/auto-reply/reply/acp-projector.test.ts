@@ -84,7 +84,7 @@ function combinedBlockText(deliveries: Delivery[]) {
 function expectToolCallSummary(delivery: Delivery | undefined) {
   expect(delivery?.kind).toBe("tool");
   expect(delivery?.text).toMatch(
-    /Running tests|Tests failed|Tool execution completed|Tool execution failed|Running tool/i,
+    /Running tests|测试检查没有通过|Tool execution completed|这一步没有跑通|Running tool/i,
   );
   expect(delivery?.text).not.toMatch(/Tool Call|status=/i);
 }
@@ -361,7 +361,7 @@ describe("createAcpReplyProjector", () => {
 
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]?.kind).toBe("tool");
-    expect(deliveries[0]?.text).toContain("Page validation failed");
+    expect(deliveries[0]?.text).toContain("页面验证没有通过，正在换方式确认。");
     expect(deliveries[0]?.text).not.toMatch(/heredoc|const browser|page\.on|console\.log|await|→/i);
   });
 
@@ -380,6 +380,150 @@ describe("createAcpReplyProjector", () => {
     expect(deliveries[0]?.kind).toBe("tool");
     expect(deliveries[0]?.text).toContain("Validating page");
     expect(deliveries[0]?.text).not.toMatch(/heredoc|const browser|→/i);
+  });
+
+  it("describes ordinary tool failures as a recoverable step instead of a task failure", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "generic-failed-1",
+      status: "failed",
+      title: "Custom Tool",
+      text: "Custom Tool failed",
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.kind).toBe("tool");
+    expect(deliveries[0]?.text).toContain("这一步没有跑通，正在继续处理。");
+    expect(deliveries[0]?.text).not.toMatch(/Tool execution failed|任务失败/i);
+  });
+
+  it("describes build and test tool failures as checks that did not pass", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "build-failed-1",
+      status: "failed",
+      title: "Run build",
+      text: "pnpm build failed",
+    });
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "test-failed-1",
+      status: "failed",
+      title: "Run tests",
+      text: "pnpm test failed",
+    });
+
+    const text = deliveries.map((entry) => entry.text ?? "").join("\n");
+    expect(text).toContain("构建检查没有通过，正在定位原因。");
+    expect(text).toContain("测试检查没有通过，正在定位原因。");
+    expect(text).not.toMatch(/Build failed|Tests failed|Tool execution failed/i);
+  });
+
+  it("describes typecheck and lint failures as code checks that did not pass", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "typecheck-failed-1",
+      status: "failed",
+      title: "Run typecheck",
+      text: "pnpm tsgo failed",
+    });
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "lint-failed-1",
+      status: "failed",
+      title: "Run lint",
+      text: "pnpm lint failed",
+    });
+
+    const text = deliveries.map((entry) => entry.text ?? "").join("\n");
+    expect(text).toContain("代码检查没有通过，正在定位原因。");
+    expect(text).not.toMatch(/Tool execution failed|任务失败/i);
+  });
+
+  it("describes git tool failures as incomplete operations instead of task failure", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "git-failed-1",
+      status: "failed",
+      title: "Run git commit",
+      text: "git commit failed",
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.text).toContain("Git 操作没有完成，正在检查阻塞原因。");
+    expect(deliveries[0]?.text).not.toMatch(/Git operation failed|任务失败/i);
+  });
+
+  it("describes gateway and ACP check failures as runtime diagnostics", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "gateway-failed-1",
+      status: "failed",
+      title: "Run gateway health",
+      text: "gateway health failed",
+    });
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "acp-status-failed-1",
+      status: "failed",
+      title: "Run ACP status",
+      text: "ACP status failed",
+    });
+
+    const text = deliveries.map((entry) => entry.text ?? "").join("\n");
+    expect(text).toContain("运行状态检查没有通过，正在继续诊断。");
+    expect(text).not.toMatch(/Tool execution failed|任务失败/i);
+  });
+
+  it("describes page validation tool failures without implying the whole task failed", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "browser-check-zh-1",
+      status: "failed",
+      title: "run node inline script (heredoc)",
+      text: "run node inline script (heredoc) → run const browser → run console.log → run node (repo) failed",
+    });
+
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.text).toContain("页面验证没有通过，正在换方式确认。");
+    expect(deliveries[0]?.text).not.toMatch(
+      /Page validation failed|Tool execution failed|heredoc|console\.log|→/i,
+    );
+  });
+
+  it("allows a final success after a recoverable tool step failure", async () => {
+    const { deliveries, projector } = createLiveToolLifecycleHarness();
+
+    await emitToolLifecycleEvent(projector, {
+      tag: "tool_call_update",
+      toolCallId: "generic-failed-then-success",
+      status: "failed",
+      title: "Custom Tool",
+      text: "Custom Tool failed",
+    });
+    await projector.onEvent({
+      type: "text_delta",
+      tag: "agent_message_chunk",
+      text: "已经换一种方式完成了。",
+    });
+    await projector.flush(true);
+
+    const text = deliveries.map((entry) => entry.text ?? "").join("\n");
+    expect(text).toContain("这一步没有跑通，正在继续处理。");
+    expect(text).toContain("已经换一种方式完成了。");
+    expect(text).not.toMatch(/Tool execution failed|任务失败/i);
   });
 
   it("adds a visible correction when a validation success claim is followed by a terminal tool failure", async () => {
@@ -405,7 +549,7 @@ describe("createAcpReplyProjector", () => {
       .filter((entry) => entry.kind === "tool")
       .map((entry) => entry.text ?? "")
       .join("\n");
-    expect(toolText).toContain("Validation not confirmed");
+    expect(toolText).toContain("前面的验证结论需要复核");
     expect(toolText).not.toMatch(/heredoc|const browser|console\.log|→/i);
   });
 
@@ -433,7 +577,7 @@ describe("createAcpReplyProjector", () => {
 
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]?.kind).toBe("tool");
-    expect(deliveries[0]?.text).toContain("Page validation failed");
+    expect(deliveries[0]?.text).toContain("页面验证没有通过，正在换方式确认。");
     expect(deliveries[0]?.text).not.toMatch(/heredoc|const browser|page\.on|→/i);
   });
 
@@ -1106,7 +1250,7 @@ describe("createAcpReplyProjector", () => {
       kind: "tool",
       meta: { toolStatus: "failed", allowEdit: true },
     });
-    expect(deliveries[1]?.text).toContain("Tests failed");
+    expect(deliveries[1]?.text).toContain("测试检查没有通过，正在定位原因。");
     expect(deliveries[1]?.text).not.toMatch(/Tool Call|status=/i);
   });
 
