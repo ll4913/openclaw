@@ -109,8 +109,14 @@ export const routedCommandDefinitions = {
     parseArgs: parseGatewayHealthRouteArgs,
     runParsedArgs: async (args) => {
       try {
-        const { callGatewayCli } = await import("../gateway-cli/call.js");
-        const result = await callGatewayCli("health", { ...args.rpc, json: args.json });
+        const { callGateway } = await import("../../gateway/call.js");
+        const result = await callGateway({
+          method: "health",
+          url: args.rpc.url,
+          token: args.rpc.token,
+          password: args.rpc.password,
+          timeoutMs: Number(args.rpc.timeout ?? 10_000),
+        });
         if (args.json) {
           defaultRuntime.writeJson(result);
           return;

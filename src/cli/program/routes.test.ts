@@ -14,7 +14,7 @@ const channelsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const channelsStatusCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const agentsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const runPluginsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
-const callGatewayCliMock = vi.hoisted(() => vi.fn(async () => ({ ok: true, durationMs: 12 })));
+const callGatewayMock = vi.hoisted(() => vi.fn(async () => ({ ok: true, durationMs: 12 })));
 const pluginsCliLoadedMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../config-cli.js", () => ({
@@ -62,8 +62,9 @@ vi.mock("../plugins-list-command.js", () => ({
   runPluginsListCommand: runPluginsListCommandMock,
 }));
 
-vi.mock("../gateway-cli/call.js", () => ({
-  callGatewayCli: callGatewayCliMock,
+vi.mock("../../gateway/call.js", () => ({
+  callGateway: callGatewayMock,
+  formatGatewayTransportErrorJson: vi.fn(() => null),
 }));
 
 vi.mock("../plugins-cli.js", () => {
@@ -224,12 +225,12 @@ describe("program routes", () => {
           "--json",
         ]),
       ).resolves.toBe(true);
-      expect(callGatewayCliMock).toHaveBeenCalledWith("health", {
+      expect(callGatewayMock).toHaveBeenCalledWith({
+        method: "health",
         url: "ws://127.0.0.1:18789",
         token: "abc",
         password: "def",
-        timeout: "5000",
-        json: true,
+        timeoutMs: 5000,
       });
       expect(writeJsonSpy).toHaveBeenCalledWith({ ok: true, durationMs: 12 });
     } finally {
