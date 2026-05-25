@@ -76,6 +76,7 @@ type CompactEmbeddedPiSessionParams = {
   sandboxSessionKey?: string;
   currentTokenCount?: number;
   contextTokenBudget?: number;
+  tokenBudget?: number;
   sessionFile?: string;
   sessionId?: string;
   trigger?: string;
@@ -866,6 +867,58 @@ describe("runMemoryFlushIfNeeded", () => {
     const compactCall = requireCompactEmbeddedPiSessionCall();
     expect(compactCall.currentTokenCount).toBe(347_000);
     expect(compactCall.contextTokenBudget).toBe(350_000);
+    expect(compactCall.tokenBudget).toBe(346_000);
+  });
+
+  it("uses the preflight threshold as the compaction token budget", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 20_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 101_449,
+      totalTokensFresh: false,
+      agentHarnessId: "codex",
+    };
+
+    await runPreflightCompactionIfNeeded({
+      cfg: {
+        models: {
+          providers: {
+            openai: { models: [{ id: "gpt-5.5", contextWindow: 1_000_000 }] },
+            "openai-codex": { models: [{ id: "gpt-5.5", contextWindow: 100_000 }] },
+          },
+        },
+        agents: { defaults: { compaction: { memoryFlush: {} } } },
+      } as never,
+      followupRun: createTestFollowupRun({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionKey: "main",
+      }),
+      defaultModel: "gpt-5.5",
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      storePath: path.join(rootDir, "sessions.json"),
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
+    const compactCall = requireCompactEmbeddedPiSessionCall();
+    expect(compactCall.currentTokenCount).toBe(101_449);
+    expect(compactCall.contextTokenBudget).toBe(100_000);
+    expect(compactCall.tokenBudget).toBe(76_000);
+    expect(compactCall.trigger).toBe("budget");
+    expect(compactCall.force).toBe(false);
   });
 
   it("still compacts when a fresh persisted token total is over the threshold", async () => {

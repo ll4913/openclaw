@@ -41,6 +41,12 @@ class CodexNativeCompactionTimeoutError extends Error {
   }
 }
 
+function resolvePositiveTokenBudget(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
 export async function maybeCompactCodexAppServerSession(
   params: CompactEmbeddedPiSessionParams,
   options: { pluginConfig?: unknown; clientFactory?: CodexAppServerClientFactory } = {},
@@ -81,11 +87,12 @@ async function compactOwningContextEngine(
 ): Promise<EmbeddedPiCompactResult> {
   const compactionTarget = params.trigger === "manual" ? "threshold" : "budget";
   const force = params.force === true || params.trigger === "manual";
+  const tokenBudget = resolvePositiveTokenBudget(params.tokenBudget) ?? params.contextTokenBudget;
   embeddedAgentLog.info("starting context-engine-owned Codex app-server compaction", {
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     engineId: contextEngine.info.id,
-    tokenBudget: params.contextTokenBudget,
+    tokenBudget,
     currentTokenCount: params.currentTokenCount,
     trigger: params.trigger,
     compactionTarget,
@@ -104,7 +111,7 @@ async function compactOwningContextEngine(
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
         sessionFile: params.sessionFile,
-        tokenBudget: params.contextTokenBudget,
+        tokenBudget,
         currentTokenCount: params.currentTokenCount,
         compactionTarget,
         customInstructions: params.customInstructions,

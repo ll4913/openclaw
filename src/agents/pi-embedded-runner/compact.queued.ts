@@ -58,6 +58,12 @@ function shouldFallbackAfterHarnessCompaction(
   );
 }
 
+function resolvePositiveTokenBudget(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
 /**
  * Compacts a session with lane queueing (session lane + global lane).
  * Use this from outside a lane context. If already inside a lane, use
@@ -126,6 +132,8 @@ export async function compactEmbeddedPiSession(
     contextTokenBudget,
     contextEnginePluginId: resolveContextEngineOwnerPluginId(contextEngine),
   });
+  const compactionTokenBudget =
+    resolvePositiveTokenBudget(params.tokenBudget) ?? contextTokenBudget;
   const harnessResult = await maybeCompactAgentHarnessSession({
     ...params,
     contextEngine,
@@ -219,7 +227,7 @@ export async function compactEmbeddedPiSession(
               sessionId: params.sessionId,
               sessionKey: params.sessionKey,
               sessionFile: params.sessionFile,
-              tokenBudget: contextTokenBudget,
+              tokenBudget: compactionTokenBudget,
               currentTokenCount: params.currentTokenCount,
               compactionTarget:
                 params.force === true || params.trigger === "manual" ? "threshold" : "budget",

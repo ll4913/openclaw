@@ -846,6 +846,62 @@ describe("maybeCompactCodexAppServerSession", () => {
     );
   });
 
+  it("passes explicit compaction token budget to owning context-engine compaction", async () => {
+    const info = vi.spyOn(embeddedAgentLog, "info").mockImplementation(() => undefined);
+    const sessionFile = await writeTestBinding();
+    const compact = vi.fn(async () => ({
+      ok: true,
+      compacted: true,
+      result: {
+        summary: "engine summary",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 101_449,
+        tokensAfter: 75_000,
+      },
+    }));
+    const contextEngine: ContextEngine = {
+      info: { id: "lossless-claw", name: "Lossless Claw", ownsCompaction: true },
+      assemble: vi.fn() as never,
+      ingest: vi.fn() as never,
+      compact,
+    };
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        contextEngine,
+        contextTokenBudget: 100_000,
+        tokenBudget: 76_000,
+        currentTokenCount: 101_449,
+        trigger: "budget",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(compact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokenBudget: 76_000,
+        currentTokenCount: 101_449,
+        compactionTarget: "budget",
+        force: false,
+      }),
+    );
+    expect(info).toHaveBeenCalledWith(
+      "starting context-engine-owned Codex app-server compaction",
+      expect.objectContaining({
+        tokenBudget: 76_000,
+        currentTokenCount: 101_449,
+        trigger: "budget",
+        compactionTarget: "budget",
+        force: false,
+      }),
+    );
+  });
+
   it("adopts successor transcript handles after owning context-engine compaction", async () => {
     const sessionFile = await writeTestBinding();
     const successorFile = path.join(tempDir, "session.compacted.jsonl");

@@ -743,10 +743,14 @@ export async function runPreflightCompactionIfNeeded(params: {
 
   const compactionTrigger = shouldCompactByTranscriptBytes ? "transcript_bytes" : "tokens";
   const forceCompaction = compactionTrigger === "transcript_bytes";
+  const compactionTokenBudget = shouldCompactByTokens
+    ? Math.max(1, Math.floor(threshold))
+    : contextWindowTokens;
   logVerbose(
     `preflightCompaction triggered: sessionKey=${params.sessionKey} ` +
       `tokenCount=${tokenCountForCompaction ?? freshPersistedTokens ?? "undefined"} ` +
       `threshold=${threshold} trigger=${compactionTrigger} ` +
+      `compactionTokenBudget=${compactionTokenBudget} ` +
       `activeTranscriptBytes=${activeTranscriptBytes ?? "undefined"} ` +
       `maxActiveTranscriptBytes=${maxActiveTranscriptBytes ?? "undefined"}`,
   );
@@ -781,6 +785,7 @@ export async function runPreflightCompactionIfNeeded(params: {
     agentHarnessId:
       entry.sessionId === params.followupRun.run.sessionId ? entry.agentHarnessId : undefined,
     contextTokenBudget: contextWindowTokens,
+    tokenBudget: compactionTokenBudget,
     thinkLevel: params.followupRun.run.thinkLevel,
     bashElevated: params.followupRun.run.bashElevated,
     force: forceCompaction,
