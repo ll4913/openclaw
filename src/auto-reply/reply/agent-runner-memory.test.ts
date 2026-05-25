@@ -870,6 +870,86 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactCall.tokenBudget).toBe(346_000);
   });
 
+  it("uses the persisted session context window before the conservative default", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 20_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 100_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 206_000,
+      totalTokensFresh: true,
+      contextTokens: 272_000,
+      model: "gpt-5.5",
+    };
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } } as never,
+      followupRun: createTestFollowupRun({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionKey: "main",
+      }),
+      defaultModel: "gpt-5.5",
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      storePath: path.join(rootDir, "sessions.json"),
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(entry).toBe(sessionEntry);
+    expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("caps fixed preflight reserve for high-context sessions", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 20_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 100_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 212_000,
+      totalTokensFresh: true,
+      contextTokens: 272_000,
+      model: "gpt-5.5",
+    };
+
+    await runPreflightCompactionIfNeeded({
+      cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } } as never,
+      followupRun: createTestFollowupRun({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionKey: "main",
+      }),
+      defaultModel: "gpt-5.5",
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      storePath: path.join(rootDir, "sessions.json"),
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
+    const compactCall = requireCompactEmbeddedPiSessionCall();
+    expect(compactCall.contextTokenBudget).toBe(272_000);
+    expect(compactCall.tokenBudget).toBe(211_200);
+  });
+
   it("uses the preflight threshold as the compaction token budget", async () => {
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,

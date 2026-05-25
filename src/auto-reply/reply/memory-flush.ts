@@ -7,6 +7,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 export function resolveMemoryFlushContextWindowTokens(params: {
   modelId?: string;
   agentCfgContextTokens?: number;
+  fallbackContextTokens?: number;
   cfg?: OpenClawConfig;
   provider?: string;
 }): number {
@@ -16,6 +17,7 @@ export function resolveMemoryFlushContextWindowTokens(params: {
       provider: params.provider,
       model: params.modelId,
       contextTokensOverride: params.agentCfgContextTokens,
+      fallbackContextTokens: params.fallbackContextTokens,
       allowAsyncLoad: false,
     }) ?? DEFAULT_CONTEXT_TOKENS
   );

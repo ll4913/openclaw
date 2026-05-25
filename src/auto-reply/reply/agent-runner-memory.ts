@@ -171,6 +171,19 @@ function resolveEffectivePromptTokens(
   return base + output + estimate;
 }
 
+function resolvePreflightReserveTokens(params: {
+  contextWindowTokens: number;
+  reserveTokensFloor: number;
+}): number {
+  const reserveTokens = Math.max(0, Math.floor(params.reserveTokensFloor));
+  const contextWindowTokens = Math.max(1, Math.floor(params.contextWindowTokens));
+  if (contextWindowTokens < 200_000 || reserveTokens <= 0) {
+    return reserveTokens;
+  }
+  const highContextReserveCap = Math.max(20_000, Math.floor(contextWindowTokens * 0.15));
+  return Math.min(reserveTokens, highContextReserveCap);
+}
+
 function resolveMemoryFlushModelFallbackOptions(
   run: FollowupRun["run"],
   model?: string,
@@ -631,12 +644,17 @@ export async function runPreflightCompactionIfNeeded(params: {
     }),
     modelId: params.followupRun.run.model ?? params.defaultModel,
     agentCfgContextTokens: params.agentCfgContextTokens,
+    fallbackContextTokens: entry.contextTokens,
   });
   const memoryFlushPlan = resolveMemoryFlushPlan({ cfg: params.cfg });
-  const reserveTokensFloor =
+  const configuredReserveTokensFloor =
     memoryFlushPlan?.reserveTokensFloor ??
     params.cfg.agents?.defaults?.compaction?.reserveTokensFloor ??
     20_000;
+  const reserveTokensFloor = resolvePreflightReserveTokens({
+    contextWindowTokens,
+    reserveTokensFloor: configuredReserveTokensFloor,
+  });
   const softThresholdTokens = memoryFlushPlan?.softThresholdTokens ?? 4_000;
   const freshPersistedTokens = resolveFreshSessionTotalTokens(entry);
   const persistedTotalTokens = entry.totalTokens;
@@ -890,6 +908,7 @@ export async function runMemoryFlushIfNeeded(params: {
     }),
     modelId: params.followupRun.run.model ?? params.defaultModel,
     agentCfgContextTokens: params.agentCfgContextTokens,
+    fallbackContextTokens: entry?.contextTokens,
   });
 
   const promptTokenEstimate = estimatePromptTokensForMemoryFlush(
