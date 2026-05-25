@@ -76,7 +76,7 @@ import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { buildReplyPromptEnvelope, buildReplyPromptEnvelopeBase } from "./prompt-prelude.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { resolveQueueSettings } from "./queue/settings-runtime.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
+import { markReplyOperationProgress, type ReplyOperation } from "./reply-run-registry.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
 import { resolveBareSessionResetPromptState } from "./session-reset-prompt.js";
@@ -99,6 +99,13 @@ type InternalGetReplyOptions = GetReplyOptions & {
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
+
+async function yieldAfterReplyProgress(operation: ReplyOperation | undefined): Promise<void> {
+  if (!operation) {
+    return;
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
 
 export function resolvePromptSilentReplyConversationType(params: {
   ctx: Pick<
@@ -438,18 +445,32 @@ export async function runPreparedReply(
     abortedLastRun,
   } = params;
   const isHeartbeat = opts?.isHeartbeat === true;
+  const internalOpts = opts as InternalGetReplyOptions | undefined;
+  const providedReplyOperation = internalOpts?.replyOperation;
   const traceAttributes = {
     provider,
     hasSessionKey: Boolean(sessionKey),
     isHeartbeat,
     queueMode: perMessageQueueMode ?? "configured",
   };
-  const traceRunPhase = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
-    measureDiagnosticsTimelineSpan(name, run, {
-      phase: "agent-turn",
-      config: cfg,
-      attributes: traceAttributes,
-    });
+  const traceRunPhase = async <T>(name: string, run: () => Promise<T> | T): Promise<T> => {
+    markReplyOperationProgress(providedReplyOperation, `${name}:start`);
+    await yieldAfterReplyProgress(providedReplyOperation);
+    try {
+      const result = await measureDiagnosticsTimelineSpan(name, run, {
+        phase: "agent-turn",
+        config: cfg,
+        attributes: traceAttributes,
+      });
+      markReplyOperationProgress(providedReplyOperation, `${name}:end`);
+      return result;
+    } catch (err) {
+      markReplyOperationProgress(providedReplyOperation, `${name}:failed`);
+      throw err;
+    }
+  };
+  markReplyOperationProgress(providedReplyOperation, "reply.prepare_prompt_context:start");
+  await yieldAfterReplyProgress(providedReplyOperation);
   const promptSessionCtx = resolvePromptSessionContextForSystemEvent({
     sessionCtx,
     sessionEntry,
@@ -613,30 +634,34 @@ export async function runPreparedReply(
   });
   const bareResetPromptState =
     isBareSessionReset && workspaceDir
-      ? await resolveBareSessionResetPromptState({
-          cfg,
-          workspaceDir,
-          isPrimaryRun: !isSubagentSessionKey(sessionKey) && !isAcpSessionKey(sessionKey),
-          isCanonicalWorkspace: !spawnedWorkspaceOverride,
-          hasBootstrapFileAccess: () =>
-            resolveBareResetBootstrapFileAccess({
-              cfg,
-              agentId,
-              sessionKey,
-              workspaceDir,
-              modelProvider: provider,
-              modelId: model,
-            }),
-        })
+      ? await traceRunPhase("reply.resolve_bare_reset_prompt_state", () =>
+          resolveBareSessionResetPromptState({
+            cfg,
+            workspaceDir,
+            isPrimaryRun: !isSubagentSessionKey(sessionKey) && !isAcpSessionKey(sessionKey),
+            isCanonicalWorkspace: !spawnedWorkspaceOverride,
+            hasBootstrapFileAccess: () =>
+              resolveBareResetBootstrapFileAccess({
+                cfg,
+                agentId,
+                sessionKey,
+                workspaceDir,
+                modelProvider: provider,
+                modelId: model,
+              }),
+          }),
+        )
       : null;
   const startupContextPrelude =
     isBareSessionReset &&
     bareResetPromptState?.shouldPrependStartupContext !== false &&
     shouldApplyStartupContext({ cfg, action: startupAction })
-      ? await buildSessionStartupContextPrelude({
-          workspaceDir,
-          cfg,
-        })
+      ? await traceRunPhase("reply.build_startup_context_prelude", () =>
+          buildSessionStartupContextPrelude({
+            workspaceDir,
+            cfg,
+          }),
+        )
       : null;
   const baseBodyFinal = isBareSessionReset
     ? (bareResetPromptState?.prompt ?? "")
@@ -723,6 +748,7 @@ export async function runPreparedReply(
     : !isNewSession && threadStarterBody
       ? `[Thread starter - for context]\n${threadStarterBody}`
       : undefined;
+  markReplyOperationProgress(providedReplyOperation, "reply.prepare_prompt_context:end");
   const drainedSystemEventBlocks: string[] = [];
   const rebuildPromptBodies = async (): Promise<{
     prefixedCommandBody: string;
@@ -832,8 +858,6 @@ export async function runPreparedReply(
       }
     }
   }
-  const internalOpts = opts as InternalGetReplyOptions | undefined;
-  const providedReplyOperation = internalOpts?.replyOperation;
   const isOwnPreDispatchOperationSession = (candidateSessionId: string | undefined): boolean =>
     providedReplyOperation !== undefined &&
     providedReplyOperation.result === null &&
@@ -1196,44 +1220,53 @@ export async function runPreparedReply(
         }
       : undefined;
 
-  return runReplyAgent({
-    commandBody: prefixedCommandBody,
-    transcriptCommandBody,
-    followupRun,
-    queueKey,
-    resolvedQueue,
-    shouldSteer,
-    shouldFollowup,
-    isActive,
-    isRunActive: () => {
-      const latestSessionState = resolvePreparedSessionState();
-      const latestActiveSessionId =
-        piRuntime?.resolveActiveEmbeddedRunSessionId(sessionKey) ?? latestSessionState.sessionId;
-      return piRuntime?.isEmbeddedPiRunActive(latestActiveSessionId) ?? false;
-    },
-    isStreaming,
-    opts,
-    typing,
-    sessionEntry: preparedSessionState.sessionEntry,
-    sessionStore,
-    sessionKey,
-    runtimePolicySessionKey,
-    storePath,
-    defaultModel,
-    agentCfgContextTokens: agentCfg?.contextTokens,
-    resolvedVerboseLevel: resolvedVerboseLevel ?? "off",
-    toolProgressDetail:
-      normalizeToolProgressDetail(agentCfg?.toolProgressDetail) ??
-      normalizeToolProgressDetail(cfg.agents?.defaults?.toolProgressDetail),
-    isNewSession,
-    blockStreamingEnabled,
-    blockReplyChunking,
-    resolvedBlockStreamingBreak,
-    sessionCtx,
-    shouldInjectGroupIntro,
-    typingMode,
-    resetTriggered: effectiveResetTriggered,
-    replyThreadingOverride,
-    replyOperation: providedReplyOperation,
-  });
+  markReplyOperationProgress(providedReplyOperation, "reply.run_reply_agent:start");
+  await yieldAfterReplyProgress(providedReplyOperation);
+  try {
+    const reply = await runReplyAgent({
+      commandBody: prefixedCommandBody,
+      transcriptCommandBody,
+      followupRun,
+      queueKey,
+      resolvedQueue,
+      shouldSteer,
+      shouldFollowup,
+      isActive,
+      isRunActive: () => {
+        const latestSessionState = resolvePreparedSessionState();
+        const latestActiveSessionId =
+          piRuntime?.resolveActiveEmbeddedRunSessionId(sessionKey) ?? latestSessionState.sessionId;
+        return piRuntime?.isEmbeddedPiRunActive(latestActiveSessionId) ?? false;
+      },
+      isStreaming,
+      opts,
+      typing,
+      sessionEntry: preparedSessionState.sessionEntry,
+      sessionStore,
+      sessionKey,
+      runtimePolicySessionKey,
+      storePath,
+      defaultModel,
+      agentCfgContextTokens: agentCfg?.contextTokens,
+      resolvedVerboseLevel: resolvedVerboseLevel ?? "off",
+      toolProgressDetail:
+        normalizeToolProgressDetail(agentCfg?.toolProgressDetail) ??
+        normalizeToolProgressDetail(cfg.agents?.defaults?.toolProgressDetail),
+      isNewSession,
+      blockStreamingEnabled,
+      blockReplyChunking,
+      resolvedBlockStreamingBreak,
+      sessionCtx,
+      shouldInjectGroupIntro,
+      typingMode,
+      resetTriggered: effectiveResetTriggered,
+      replyThreadingOverride,
+      replyOperation: providedReplyOperation,
+    });
+    markReplyOperationProgress(providedReplyOperation, "reply.run_reply_agent:end");
+    return reply;
+  } catch (err) {
+    markReplyOperationProgress(providedReplyOperation, "reply.run_reply_agent:failed");
+    throw err;
+  }
 }

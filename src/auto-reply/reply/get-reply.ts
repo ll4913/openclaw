@@ -47,6 +47,7 @@ import { hasInboundMedia } from "./inbound-media.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createFastTestModelSelectionState, createModelSelectionState } from "./model-selection.js";
 import { sanitizePendingFinalDeliveryText } from "./pending-final-delivery.js";
+import { markReplyOperationProgress, type ReplyOperation } from "./reply-run-registry.js";
 import { initSessionState } from "./session.js";
 import {
   isStaleHeartbeatAutoFallbackOverride,
@@ -55,6 +56,16 @@ import {
 import { createTypingController } from "./typing.js";
 
 type ResetCommandAction = "new" | "reset";
+type InternalGetReplyOptions = GetReplyOptions & {
+  replyOperation?: ReplyOperation;
+};
+
+async function yieldAfterReplyProgress(operation: ReplyOperation | undefined): Promise<void> {
+  if (!operation) {
+    return;
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
 
 function classifyHeartbeatPendingFinalDelivery(text: string, ackMaxChars: number) {
   const stripped = stripHeartbeatToken(text, {
@@ -224,18 +235,29 @@ export async function getReplyFromConfig(
   const finalized = finalizeInboundContext(ctx);
   const targetSessionKey = resolveCommandTurnTargetSessionKey(finalized);
   const agentSessionKey = targetSessionKey || finalized.SessionKey;
+  const providedReplyOperation = (opts as InternalGetReplyOptions | undefined)?.replyOperation;
   const traceAttributes = {
     surface: normalizeOptionalString(finalized.Surface ?? finalized.Provider) ?? "unknown",
     hasSessionKey: Boolean(agentSessionKey),
     isHeartbeat: opts?.isHeartbeat === true,
     hasMedia: hasInboundMedia(finalized),
   };
-  const traceGetReplyPhase = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
-    measureDiagnosticsTimelineSpan(name, run, {
-      phase: "agent-turn",
-      config: cfg,
-      attributes: traceAttributes,
-    });
+  const traceGetReplyPhase = async <T>(name: string, run: () => Promise<T> | T): Promise<T> => {
+    markReplyOperationProgress(providedReplyOperation, `${name}:start`);
+    await yieldAfterReplyProgress(providedReplyOperation);
+    try {
+      const result = await measureDiagnosticsTimelineSpan(name, run, {
+        phase: "agent-turn",
+        config: cfg,
+        attributes: traceAttributes,
+      });
+      markReplyOperationProgress(providedReplyOperation, `${name}:end`);
+      return result;
+    } catch (err) {
+      markReplyOperationProgress(providedReplyOperation, `${name}:failed`);
+      throw err;
+    }
+  };
   const agentId = resolveSessionAgentId({
     sessionKey: agentSessionKey,
     config: cfg,

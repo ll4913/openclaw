@@ -8,6 +8,11 @@ import {
   setActiveEmbeddedRun,
 } from "../../agents/pi-embedded-runner/runs.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import {
+  onInternalDiagnosticEvent,
+  waitForDiagnosticEventsDrained,
+} from "../../infra/diagnostic-events.js";
+import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
 import { createReplyOperation } from "./reply-run-registry.js";
 
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({
@@ -287,10 +292,12 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   beforeEach(async () => {
+    await waitForDiagnosticEventsDrained();
     storeRuntimeLoads.mockClear();
     updateSessionStore.mockReset();
     vi.clearAllMocks();
     replyRunTesting.resetReplyRunRegistry();
+    resetDiagnosticRunActivityForTest();
   });
 
   afterEach(() => {
@@ -1223,6 +1230,48 @@ describe("runPreparedReply media-only handling", () => {
     } finally {
       operation.complete();
       vi.mocked(piRuntime.resolveActiveEmbeddedRunSessionId).mockReset().mockReturnValue(undefined);
+    }
+  });
+
+  it("emits resolver phase progress through the provided reply operation", async () => {
+    await waitForDiagnosticEventsDrained();
+    const operation = createReplyOperation({
+      sessionId: "session-progress",
+      sessionKey: "session-key",
+      resetTriggered: false,
+    });
+    await waitForDiagnosticEventsDrained();
+    const progressReasons: string[] = [];
+    const stopCollecting = onInternalDiagnosticEvent((event) => {
+      if (event.type === "run.progress" && event.sessionKey === "session-key") {
+        progressReasons.push(event.reason);
+      }
+    });
+
+    try {
+      await runPreparedReply(
+        baseParams({
+          sessionId: "session-progress",
+          opts: { replyOperation: operation } as never,
+        }),
+      );
+      await waitForDiagnosticEventsDrained();
+
+      expect(progressReasons).toEqual(
+        expect.arrayContaining([
+          "reply.prepare_prompt_context:start",
+          "reply.build_prompt_bodies:start",
+          "reply.load_pi_runtime:start",
+          "reply.resolve_auth_profile:start",
+          "reply.load_agent_runner_runtime:start",
+          "reply.resolve_current_turn_images:start",
+          "reply.run_reply_agent:start",
+          "reply.run_reply_agent:end",
+        ]),
+      );
+    } finally {
+      stopCollecting();
+      operation.complete();
     }
   });
 
