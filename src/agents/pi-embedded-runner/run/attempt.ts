@@ -302,7 +302,9 @@ import { resolveAttemptWorkspaceBootstrapRouting } from "./attempt-bootstrap-rou
 import { configureEmbeddedAttemptHttpRuntime } from "./attempt-http-runtime.js";
 import {
   createEmbeddedRunStageTracker,
+  formatEmbeddedRunPrepProgress,
   formatEmbeddedRunStageSummary,
+  shouldLogEmbeddedRunPrepProgress,
   shouldWarnEmbeddedRunStageSummary,
   yieldEmbeddedRunPrep,
 } from "./attempt-stage-timing.js";
@@ -1342,6 +1344,21 @@ export async function runEmbeddedAttempt(
         ...diagnosticRunBase,
         reason,
       });
+      const summary = prepStages.snapshot();
+      if (
+        shouldLogEmbeddedRunPrepProgress({
+          reason,
+          summary,
+          traceEnabled: log.isEnabled("trace"),
+        })
+      ) {
+        log.info(
+          formatEmbeddedRunPrepProgress(
+            `[trace:embedded-run] prep progress: runId=${params.runId} sessionId=${params.sessionId}`,
+            { reason, summary },
+          ),
+        );
+      }
       await yieldEmbeddedRunPrep();
     };
     const markPrepStage = async (name: string) => {

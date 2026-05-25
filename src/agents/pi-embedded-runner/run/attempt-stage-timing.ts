@@ -18,6 +18,13 @@ export type EmbeddedRunPrepYieldOptions = {
   yieldNow?: () => Promise<void>;
 };
 
+export type EmbeddedRunPrepProgressLogOptions = {
+  reason: string;
+  summary: EmbeddedRunStageSummary;
+  traceEnabled?: boolean;
+  elapsedThresholdMs?: number;
+};
+
 export const EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE = {
   workspace: "attempt-workspace",
   prompt: "attempt-prompt",
@@ -27,6 +34,7 @@ export const EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE = {
 
 const EMBEDDED_RUN_STAGE_WARN_TOTAL_MS = 10_000;
 const EMBEDDED_RUN_STAGE_WARN_STAGE_MS = 5_000;
+const EMBEDDED_RUN_PREP_PROGRESS_LOG_ELAPSED_MS = 1_000;
 
 export function createEmbeddedRunStageTracker(options?: {
   now?: () => number;
@@ -65,6 +73,30 @@ export async function yieldEmbeddedRunPrep(options?: EmbeddedRunPrepYieldOptions
   await new Promise<void>((resolve) => {
     setImmediate(resolve);
   });
+}
+
+export function shouldLogEmbeddedRunPrepProgress(
+  options: EmbeddedRunPrepProgressLogOptions,
+): boolean {
+  if (options.traceEnabled) {
+    return true;
+  }
+  if (options.reason.endsWith("-start")) {
+    return true;
+  }
+  const thresholdMs = options.elapsedThresholdMs ?? EMBEDDED_RUN_PREP_PROGRESS_LOG_ELAPSED_MS;
+  return options.summary.totalMs >= thresholdMs;
+}
+
+export function formatEmbeddedRunPrepProgress(
+  prefix: string,
+  options: Pick<EmbeddedRunPrepProgressLogOptions, "reason" | "summary">,
+): string {
+  const lastStage = options.summary.stages.at(-1);
+  const lastStageText = lastStage
+    ? ` lastStage=${lastStage.name}:${lastStage.durationMs}ms@${lastStage.elapsedMs}ms`
+    : "";
+  return `${prefix} reason=${options.reason} elapsedMs=${options.summary.totalMs}${lastStageText}`;
 }
 
 export function shouldWarnEmbeddedRunStageSummary(

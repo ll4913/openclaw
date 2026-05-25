@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   createEmbeddedRunStageTracker,
   EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE,
+  formatEmbeddedRunPrepProgress,
   formatEmbeddedRunStageSummary,
+  shouldLogEmbeddedRunPrepProgress,
   shouldWarnEmbeddedRunStageSummary,
   yieldEmbeddedRunPrep,
 } from "./attempt-stage-timing.js";
@@ -66,6 +68,44 @@ describe("embedded run stage timing", () => {
     });
 
     expect(calls).toEqual(["yielded"]);
+  });
+
+  it("logs prep progress for start markers and slow elapsed prep", () => {
+    const fastSummary = {
+      totalMs: 10,
+      stages: [{ name: "bootstrap-context", durationMs: 10, elapsedMs: 10 }],
+    };
+    const slowSummary = {
+      totalMs: 1_000,
+      stages: [{ name: "bundle-tools", durationMs: 990, elapsedMs: 1_000 }],
+    };
+
+    expect(
+      shouldLogEmbeddedRunPrepProgress({
+        reason: "embedded_run:prep:bootstrap-context-start",
+        summary: fastSummary,
+      }),
+    ).toBe(true);
+    expect(
+      shouldLogEmbeddedRunPrepProgress({
+        reason: "embedded_run:prep:bootstrap-context",
+        summary: fastSummary,
+      }),
+    ).toBe(false);
+    expect(
+      shouldLogEmbeddedRunPrepProgress({
+        reason: "embedded_run:prep:bundle-tools",
+        summary: slowSummary,
+      }),
+    ).toBe(true);
+    expect(
+      formatEmbeddedRunPrepProgress("prep", {
+        reason: "embedded_run:prep:bundle-tools",
+        summary: slowSummary,
+      }),
+    ).toBe(
+      "prep reason=embedded_run:prep:bundle-tools elapsedMs=1000 lastStage=bundle-tools:990ms@1000ms",
+    );
   });
 
   it("formats summaries compactly for logs", () => {

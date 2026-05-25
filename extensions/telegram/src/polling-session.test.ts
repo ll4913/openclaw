@@ -747,6 +747,53 @@ describe("TelegramPollingSession", () => {
     }
   });
 
+  it("does not log a spool summary error when a processing file disappears during summary", async () => {
+    await withTempSpool(async (spoolDir) => {
+      await writeTelegramSpooledUpdate({
+        spoolDir,
+        update: { update_id: 43, message: { text: "summary race" } },
+      });
+      const update = (await listTelegramSpooledUpdates({ spoolDir }))[0];
+      if (!update) {
+        throw new Error("Expected a spooled update");
+      }
+      const claim = await claimTelegramSpooledUpdate(update);
+      if (!claim) {
+        throw new Error("Expected a claimed update");
+      }
+      const abort = new AbortController();
+      const log = vi.fn();
+      const originalStat = fs.stat.bind(fs) as typeof fs.stat;
+      const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+        const [target] = args;
+        if (String(target) === claim.path) {
+          const gone = new Error("processing file moved during summary") as NodeJS.ErrnoException;
+          gone.code = "ENOENT";
+          throw gone;
+        }
+        return originalStat(...args);
+      });
+      try {
+        const { runPromise } = startIsolatedIngressSession({
+          abort,
+          spoolDir,
+          handleUpdate: vi.fn(async () => undefined),
+          drainIntervalMs: 10,
+          log,
+        });
+
+        await vi.waitFor(() => expect(statSpy).toHaveBeenCalledWith(claim.path));
+        abort.abort();
+        await runPromise;
+
+        expectLogExcludes(log, "isolated polling spool summary failed");
+      } finally {
+        statSpy.mockRestore();
+        abort.abort();
+      }
+    });
+  });
+
   it("drains Telegram delivery queue after isolated ingress reports poll success", async () => {
     const abort = new AbortController();
     const init = vi.fn(async () => undefined);
