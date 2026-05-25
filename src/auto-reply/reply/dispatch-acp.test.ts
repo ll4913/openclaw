@@ -613,6 +613,26 @@ describe("tryDispatchAcpReply", () => {
     expect(text).toContain("reply privately unless you send explicitly");
   });
 
+  it("adds Telegram report readability guidance to ACP turns", async () => {
+    setReadyAcpResolution();
+
+    await runDispatch({
+      bodyForAgent: "finish the task and report back",
+      ctxOverrides: {
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+    });
+
+    expect(managerMocks.runTurn).toHaveBeenCalledTimes(1);
+    const text = runTurnCall().text;
+    expect(text).toContain("make the final visible reply easy to scan in Telegram");
+    expect(text).toContain("✅ 结果");
+    expect(text).toContain("🔧 改动");
+    expect(text).toContain("🧪 验证");
+    expect(text).toContain("finish the task and report back");
+  });
+
   it("starts reply lifecycle for tool-only ACP turns while suppressing automatic delivery", async () => {
     setReadyAcpResolution();
     mockVisibleTextTurn("hidden final");

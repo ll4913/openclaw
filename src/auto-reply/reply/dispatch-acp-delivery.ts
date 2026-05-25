@@ -14,8 +14,9 @@ import { resolveConfiguredTtsMode, shouldCleanTtsDirectiveText } from "../../tts
 import { isReplyPayloadStatusNotice } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
-import { waitForReplyDispatcherIdle } from "./reply-dispatcher.js";
+import { formatAcpFinalReportText } from "./acp-final-report-format.js";
 import { sanitizeVisibleAcpAssistantText } from "./acp-projector.js";
+import { waitForReplyDispatcherIdle } from "./reply-dispatcher.js";
 import type { ReplyDispatchKind, ReplyDispatcher } from "./reply-dispatcher.types.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 
@@ -59,6 +60,18 @@ type ToolMessageHandle = {
   threadId?: string | number;
   messageId: string;
 };
+
+function shouldFormatFinalReportForTelegram(params: {
+  ctx: FinalizedMsgContext;
+  originatingChannel?: string;
+}): boolean {
+  return [
+    params.originatingChannel,
+    params.ctx.OriginatingChannel,
+    params.ctx.Surface,
+    params.ctx.Provider,
+  ].some((channel) => normalizeOptionalLowercaseString(channel) === "telegram");
+}
 
 async function shouldTreatDeliveredTextAsVisible(params: {
   channel: string | undefined;
@@ -200,6 +213,10 @@ export function createAcpDispatchDeliveryCoordinator(params: {
 }): AcpDispatchDeliveryCoordinator {
   const directChannel = normalizeOptionalLowercaseString(params.ctx.Provider ?? params.ctx.Surface);
   const routedChannel = normalizeOptionalLowercaseString(params.originatingChannel);
+  const formatTelegramFinalReport = shouldFormatFinalReportForTelegram({
+    ctx: params.ctx,
+    originatingChannel: params.originatingChannel,
+  });
   const deliverySessionKey = normalizeOptionalString(params.sessionKey) ?? params.ctx.SessionKey;
   const explicitAccountId = normalizeOptionalString(params.ctx.AccountId);
   const resolvedAccountId =
@@ -322,10 +339,16 @@ export function createAcpDispatchDeliveryCoordinator(params: {
     let visiblePayload = payload.text
       ? { ...payload, text: sanitizeVisibleAcpAssistantText(payload.text) }
       : payload;
+    const isStatusNotice = isReplyPayloadStatusNotice(payload);
+    if (formatTelegramFinalReport && kind === "final" && visiblePayload.text && !isStatusNotice) {
+      visiblePayload = {
+        ...visiblePayload,
+        text: formatAcpFinalReportText(visiblePayload.text),
+      };
+    }
     const rawBlockText =
       kind === "block" ? normalizeOptionalString(visiblePayload.text) : undefined;
     if (rawBlockText) {
-      const isStatusNotice = isReplyPayloadStatusNotice(payload);
       const joinsBufferedTtsDirective =
         state.cleanBlockTtsDirectiveText?.hasBufferedDirectiveText() === true;
       if (!isStatusNotice) {
@@ -351,7 +374,6 @@ export function createAcpDispatchDeliveryCoordinator(params: {
         state.accumulatedVisibleBlockText += visiblePayload.text;
       }
     }
-    const isStatusNotice = isReplyPayloadStatusNotice(payload);
     const rawFinalText =
       kind === "final" && !isStatusNotice
         ? normalizeOptionalString(visiblePayload.text)

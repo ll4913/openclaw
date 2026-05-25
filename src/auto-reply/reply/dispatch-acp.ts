@@ -150,18 +150,32 @@ function resolveAcpRequestId(ctx: FinalizedMsgContext): string {
 function resolveAcpTurnText(params: {
   promptText: string;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  channel?: string;
 }): string {
-  if (params.sourceReplyDeliveryMode !== "message_tool_only") {
-    return params.promptText;
+  const guidanceBlocks: string[] = [];
+  if (normalizeOptionalLowercaseString(params.channel) === "telegram") {
+    guidanceBlocks.push(
+      prefixSystemMessage(
+        [
+          "When the answer is a task completion report or multi-step status update, make the final visible reply easy to scan in Telegram.",
+          "Use sparse emoji section labels such as ✅ 结果, 🔧 改动, 🧪 验证, ⚠️ 注意, and ➡️ 下一步.",
+          "Preserve technical details, paths, commands, and verification results; do not add decorative emoji to every line.",
+        ].join(" "),
+      ),
+    );
   }
-  const guidance = prefixSystemMessage(
-    [
-      "Source channel delivery is private by default for this turn.",
-      "Normal ACP final output will not be automatically posted to the source channel.",
-      "To send visible output, use message(action=send). The target defaults to the current source channel.",
-    ].join(" "),
-  );
-  return params.promptText ? `${guidance}\n\n${params.promptText}` : guidance;
+  if (params.sourceReplyDeliveryMode === "message_tool_only") {
+    guidanceBlocks.push(
+      prefixSystemMessage(
+        [
+          "Source channel delivery is private by default for this turn.",
+          "Normal ACP final output will not be automatically posted to the source channel.",
+          "To send visible output, use message(action=send). The target defaults to the current source channel.",
+        ].join(" "),
+      ),
+    );
+  }
+  return [...guidanceBlocks, params.promptText].filter(Boolean).join("\n\n");
 }
 
 async function hasBoundConversationForSession(params: {
@@ -826,6 +840,7 @@ export async function tryDispatchAcpReply(params: {
       text: resolveAcpTurnText({
         promptText: turnPromptText,
         sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+        channel: params.ctx.OriginatingChannel ?? params.ctx.Surface ?? params.ctx.Provider,
       }),
       attachments: attachments.length > 0 ? attachments : undefined,
     };

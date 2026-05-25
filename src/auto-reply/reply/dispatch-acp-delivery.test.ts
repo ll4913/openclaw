@@ -253,6 +253,80 @@ describe("createAcpDispatchDeliveryCoordinator", () => {
     expect(coordinator.getAccumulatedFinalText()).not.toMatch(/ECONNREFUSED/i);
   });
 
+  it("formats ACP final reports into a readable Telegram status card", async () => {
+    const dispatcher = createDispatcher();
+    const coordinator = createAcpDispatchDeliveryCoordinator({
+      cfg: createAcpTestConfig(),
+      ctx: buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        SessionKey: "agent:codex-acp:session-1",
+      }),
+      dispatcher,
+      inboundAudio: false,
+      shouldRouteToOriginating: false,
+    });
+
+    await coordinator.deliver(
+      "final",
+      {
+        text: [
+          "Result:",
+          "Task reply is now easier to scan.",
+          "",
+          "Changes:",
+          "- Added readable section labels.",
+          "",
+          "Verification:",
+          "- Focused tests pass.",
+        ].join("\n"),
+      },
+      { skipTts: true },
+    );
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: [
+        "✅ 结果",
+        "Task reply is now easier to scan.",
+        "",
+        "🔧 改动",
+        "- Added readable section labels.",
+        "",
+        "🧪 验证",
+        "- Focused tests pass.",
+      ].join("\n"),
+    });
+    expect(coordinator.getAccumulatedFinalText()).toContain("✅ 结果");
+    expect(coordinator.getAccumulatedFinalText()).toContain("🧪 验证");
+  });
+
+  it("leaves non-Telegram ACP final report headings unchanged", async () => {
+    const dispatcher = createDispatcher();
+    const coordinator = createAcpDispatchDeliveryCoordinator({
+      cfg: createAcpTestConfig(),
+      ctx: buildTestCtx({
+        Provider: "visiblechat",
+        Surface: "visiblechat",
+        SessionKey: "agent:codex-acp:session-1",
+      }),
+      dispatcher,
+      inboundAudio: false,
+      shouldRouteToOriginating: false,
+    });
+
+    await coordinator.deliver(
+      "final",
+      {
+        text: ["Result:", "Task reply is now easier to scan."].join("\n"),
+      },
+      { skipTts: true },
+    );
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: ["Result:", "Task reply is now easier to scan."].join("\n"),
+    });
+  });
+
   it("tracks visible direct block text for dispatcher-backed delivery", async () => {
     const coordinator = createAcpDispatchDeliveryCoordinator({
       cfg: createAcpTestConfig(),
