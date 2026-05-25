@@ -131,6 +131,42 @@ export function parseGatewayStatusRouteArgs(argv: string[]) {
   };
 }
 
+export function parseGatewayHealthRouteArgs(argv: string[]) {
+  const positionals = getCommandPositionalsWithRootOptions(argv, {
+    commandPath: ["gateway", "health"],
+    booleanFlags: ["--json", "--expect-final"],
+    valueFlags: ["--url", "--token", "--password", "--timeout"],
+  });
+  if (!positionals || positionals.length !== 0) {
+    return null;
+  }
+  const url = parseOptionalFlagValue(argv, "--url");
+  if (!url.ok) {
+    return null;
+  }
+  const token = parseOptionalFlagValue(argv, "--token");
+  if (!token.ok) {
+    return null;
+  }
+  const password = parseOptionalFlagValue(argv, "--password");
+  if (!password.ok) {
+    return null;
+  }
+  const timeout = parseOptionalFlagValue(argv, "--timeout");
+  if (!timeout.ok) {
+    return null;
+  }
+  return {
+    json: hasFlag(argv, "--json"),
+    rpc: {
+      url: url.value,
+      token: token.value,
+      password: password.value,
+      timeout: timeout.value,
+    },
+  };
+}
+
 export function parseSessionsRouteArgs(argv: string[]) {
   const agent = parseOptionalFlagValue(argv, "--agent");
   if (!agent.ok) {

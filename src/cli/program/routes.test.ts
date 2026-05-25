@@ -14,6 +14,7 @@ const channelsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const channelsStatusCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const agentsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const runPluginsListCommandMock = vi.hoisted(() => vi.fn(async () => {}));
+const callGatewayCliMock = vi.hoisted(() => vi.fn(async () => ({ ok: true, durationMs: 12 })));
 const pluginsCliLoadedMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../config-cli.js", () => ({
@@ -59,6 +60,10 @@ vi.mock("../../commands/agents.commands.list.js", () => ({
 
 vi.mock("../plugins-list-command.js", () => ({
   runPluginsListCommand: runPluginsListCommandMock,
+}));
+
+vi.mock("../gateway-cli/call.js", () => ({
+  callGatewayCli: callGatewayCliMock,
 }));
 
 vi.mock("../plugins-cli.js", () => {
@@ -189,6 +194,63 @@ describe("program routes", () => {
   it("matches gateway status route without plugin preload", () => {
     const route = expectRoute(["gateway", "status"]);
     expect(route.loadPlugins).toBeUndefined();
+  });
+
+  it("matches gateway health route without plugin preload", () => {
+    const route = expectRoute(["gateway", "health"]);
+    expect(route.loadPlugins).toBeUndefined();
+  });
+
+  it("passes parsed gateway health flags through to gateway RPC", async () => {
+    const route = expectRoute(["gateway", "health"]);
+    const writeJsonSpy = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+    try {
+      await expect(
+        route.run([
+          "node",
+          "openclaw",
+          "--profile",
+          "work",
+          "gateway",
+          "health",
+          "--url",
+          "ws://127.0.0.1:18789",
+          "--token",
+          "abc",
+          "--password",
+          "def",
+          "--timeout",
+          "5000",
+          "--json",
+        ]),
+      ).resolves.toBe(true);
+      expect(callGatewayCliMock).toHaveBeenCalledWith("health", {
+        url: "ws://127.0.0.1:18789",
+        token: "abc",
+        password: "def",
+        timeout: "5000",
+        json: true,
+      });
+      expect(writeJsonSpy).toHaveBeenCalledWith({ ok: true, durationMs: 12 });
+    } finally {
+      writeJsonSpy.mockRestore();
+    }
+  });
+
+  it("returns false for gateway health route when option values are missing", async () => {
+    await expectRunFalse(["gateway", "health"], ["node", "openclaw", "gateway", "health", "--url"]);
+    await expectRunFalse(
+      ["gateway", "health"],
+      ["node", "openclaw", "gateway", "health", "--token"],
+    );
+    await expectRunFalse(
+      ["gateway", "health"],
+      ["node", "openclaw", "gateway", "health", "--password"],
+    );
+    await expectRunFalse(
+      ["gateway", "health"],
+      ["node", "openclaw", "gateway", "health", "--timeout"],
+    );
   });
 
   it("returns false for gateway status route when option values are missing", async () => {

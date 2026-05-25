@@ -399,6 +399,41 @@ describe("runContextEngineMaintenance", () => {
     });
   });
 
+  it("yields to the event loop before foreground maintenance starts", async () => {
+    const events: string[] = [];
+    const externalImmediate = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        events.push("external-immediate");
+        resolve();
+      });
+    });
+    const maintain = vi.fn(async () => {
+      events.push("maintain-start");
+      return {
+        changed: false,
+        bytesFreed: 0,
+        rewrittenEntries: 0,
+      };
+    });
+
+    await runContextEngineMaintenance({
+      contextEngine: {
+        info: { id: "test", name: "Test Engine" },
+        ingest: async () => ({ ingested: true }),
+        assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
+        compact: async () => ({ ok: true, compacted: false }),
+        maintain,
+      },
+      sessionId: "session-yield-before-maintenance",
+      sessionKey: "agent:main:session-yield-before-maintenance",
+      sessionFile: "/tmp/session-yield-before-maintenance.jsonl",
+      reason: "turn",
+    });
+    await externalImmediate;
+
+    expect(events).toEqual(["external-immediate", "maintain-start"]);
+  });
+
   it("forces background maintenance rewrites through the session file even when a session manager exists", async () => {
     const maintain = vi.fn(async (params?: unknown) => {
       await (
@@ -649,9 +684,13 @@ describe("runContextEngineMaintenance", () => {
           },
         });
 
+        await waitForAssertion(() => {
+          const completedTask = getTaskById(queuedTasks[0].taskId);
+          const completedTaskRecord = requireRecord(completedTask, "completed task");
+          expect(completedTaskRecord.status).toBe("succeeded");
+        });
         const completedTask = getTaskById(queuedTasks[0].taskId);
         const completedTaskRecord = requireRecord(completedTask, "completed task");
-        expect(completedTaskRecord.status).toBe("succeeded");
         expect(String(completedTaskRecord.progressSummary)).toContain(
           "Deferred maintenance completed",
         );
@@ -729,11 +768,13 @@ describe("runContextEngineMaintenance", () => {
         }
         releaseForeground();
         await waitForAssertion(() => expect(maintain).toHaveBeenCalledTimes(2));
-        const completedTasks = listTasksForOwnerKey(sessionKey).filter(
-          (task) => task.taskKind === TURN_MAINTENANCE_TASK_KIND,
-        );
-        expect(completedTasks).toHaveLength(2);
-        expect(completedTasks.every((task) => task.status === "succeeded")).toBe(true);
+        await waitForAssertion(() => {
+          const completedTasks = listTasksForOwnerKey(sessionKey).filter(
+            (task) => task.taskKind === TURN_MAINTENANCE_TASK_KIND,
+          );
+          expect(completedTasks).toHaveLength(2);
+          expect(completedTasks.every((task) => task.status === "succeeded")).toBe(true);
+        });
 
         await foregroundTurn;
       } finally {

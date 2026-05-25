@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { scheduler } from "node:timers/promises";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveContextEngineOwnerPluginId } from "../../context-engine/registry.js";
 import type {
@@ -110,6 +111,10 @@ function normalizeSessionKey(sessionKey?: string): string | undefined {
 
 function resolveDeferredTurnMaintenanceLane(sessionKey: string): string {
   return `${TURN_MAINTENANCE_LANE_PREFIX}${sessionKey}`;
+}
+
+async function yieldContextEngineMaintenance(): Promise<void> {
+  await scheduler.yield();
 }
 
 export function createDeferredTurnMaintenanceAbortSignal(params?: {
@@ -347,6 +352,7 @@ async function executeContextEngineMaintenance(params: {
   if (typeof params.contextEngine.maintain !== "function") {
     return undefined;
   }
+  await yieldContextEngineMaintenance();
   const result = await params.contextEngine.maintain({
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
@@ -374,6 +380,7 @@ async function executeContextEngineMaintenance(params: {
         `sessionKey=${params.sessionKey ?? params.sessionId ?? "unknown"}`,
     );
   }
+  await yieldContextEngineMaintenance();
   return result;
 }
 
@@ -452,7 +459,7 @@ async function runDeferredTurnMaintenanceWorker(params: {
         }
         await sleepWithAbort(TURN_MAINTENANCE_WAIT_POLL_MS, shutdownAbort.abortSignal);
       }
-      await Promise.resolve();
+      await yieldContextEngineMaintenance();
       if (getQueueSize(sessionLane) === 0) {
         break;
       }

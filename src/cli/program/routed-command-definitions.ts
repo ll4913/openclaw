@@ -1,3 +1,4 @@
+import type { HealthSummary } from "../../commands/health.js";
 import { defaultRuntime } from "../../runtime.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import {
@@ -6,6 +7,7 @@ import {
   parseChannelsStatusRouteArgs,
   parseConfigGetRouteArgs,
   parseConfigUnsetRouteArgs,
+  parseGatewayHealthRouteArgs,
   parseGatewayStatusRouteArgs,
   parseHealthRouteArgs,
   parseModelsListRouteArgs,
@@ -101,6 +103,55 @@ export const routedCommandDefinitions = {
     runParsedArgs: async (args) => {
       const { runDaemonStatus } = await import("../daemon-cli/status.js");
       await runDaemonStatus(args);
+    },
+  }),
+  "gateway-health": defineRoutedCommand({
+    parseArgs: parseGatewayHealthRouteArgs,
+    runParsedArgs: async (args) => {
+      try {
+        const { callGatewayCli } = await import("../gateway-cli/call.js");
+        const result = await callGatewayCli("health", { ...args.rpc, json: args.json });
+        if (args.json) {
+          defaultRuntime.writeJson(result);
+          return;
+        }
+
+        const [{ formatHealthChannelLines }, { styleHealthChannelLine }, terminalTheme] =
+          await Promise.all([
+            import("../../commands/health.js"),
+            import("../../terminal/health-style.js"),
+            import("../../terminal/theme.js"),
+          ]);
+        const rich = terminalTheme.isRich();
+        const obj: Record<string, unknown> =
+          result && typeof result === "object" ? (result as Record<string, unknown>) : {};
+        const durationMs = typeof obj.durationMs === "number" ? obj.durationMs : null;
+        defaultRuntime.log(
+          terminalTheme.colorize(rich, terminalTheme.theme.heading, "Gateway Health"),
+        );
+        defaultRuntime.log(
+          `${terminalTheme.colorize(rich, terminalTheme.theme.success, "OK")}${
+            durationMs != null ? ` (${durationMs}ms)` : ""
+          }`,
+        );
+        if (obj.channels && typeof obj.channels === "object") {
+          for (const line of formatHealthChannelLines(result as HealthSummary)) {
+            defaultRuntime.log(styleHealthChannelLine(line, rich));
+          }
+        }
+      } catch (err) {
+        if (args.json) {
+          const { formatGatewayTransportErrorJson } = await import("../../gateway/call.js");
+          const payload = formatGatewayTransportErrorJson(err);
+          if (payload) {
+            defaultRuntime.writeJson(payload);
+            defaultRuntime.exit(1);
+            return;
+          }
+        }
+        defaultRuntime.error(String(err));
+        defaultRuntime.exit(1);
+      }
     },
   }),
   sessions: defineRoutedCommand({
