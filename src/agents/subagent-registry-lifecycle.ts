@@ -316,6 +316,12 @@ export function createSubagentRegistryLifecycleController(params: {
     const endedAt = args.entry.endedAt ?? Date.now();
     const terminalResult = resolveRequiredCompletionDeliveryFailureTerminalResult(args.reason);
     try {
+      setDetachedTaskDeliveryStatusByRunId({
+        runId: args.entry.runId,
+        runtime: "subagent",
+        sessionKey: args.entry.childSessionKey,
+        deliveryStatus: "pending",
+      });
       completeTaskRunByRunId({
         runId: args.entry.runId,
         runtime: "subagent",

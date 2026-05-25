@@ -111,7 +111,11 @@ export function shouldAutoDeliverTaskTerminalUpdate(task: TaskRecord): boolean {
   if (task.notifyPolicy === "silent") {
     return false;
   }
-  if (task.runtime === "subagent" && task.status !== "cancelled") {
+  if (
+    task.runtime === "subagent" &&
+    task.status === "succeeded" &&
+    task.terminalOutcome !== "blocked"
+  ) {
     return false;
   }
   if (!isTerminalTaskStatus(task.status)) {

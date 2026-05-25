@@ -38,6 +38,7 @@ const TURN_MAINTENANCE_TASK_TASK = "Deferred context-engine maintenance after tu
 const TURN_MAINTENANCE_LANE_PREFIX = "context-engine-turn-maintenance:";
 const TURN_MAINTENANCE_WAIT_POLL_MS = 100;
 const TURN_MAINTENANCE_LONG_WAIT_MS = 10_000;
+const TURN_MAINTENANCE_MAX_WAIT_MS = 5 * 60_000;
 const DEFERRED_TURN_MAINTENANCE_ABORT_STATE_KEY = Symbol.for(
   "openclaw.contextEngineTurnMaintenanceAbortState",
 );
@@ -415,6 +416,28 @@ async function runDeferredTurnMaintenanceWorker(params: {
     for (;;) {
       while (getQueueSize(sessionLane) > 0) {
         const now = Date.now();
+        if (now - startedWaitingAt >= TURN_MAINTENANCE_MAX_WAIT_MS) {
+          const waitedSeconds = Math.round((now - startedWaitingAt) / 1000);
+          if (!surfacedUserNotice) {
+            surfaceMaintenanceUpdate(
+              "Waiting for the session lane to go idle.",
+              "Deferred maintenance is waiting for the session lane to go idle.",
+            );
+          }
+          const summary = `Deferred maintenance timed out after waiting ${waitedSeconds}s for the session lane to go idle.`;
+          failTaskRunByRunId({
+            runId: params.runId,
+            runtime: "acp",
+            sessionKey: params.sessionKey,
+            status: "timed_out",
+            endedAt: now,
+            lastEventAt: now,
+            error: summary,
+            progressSummary: summary,
+            terminalSummary: `${summary} It will be retried after a later turn.`,
+          });
+          return;
+        }
         if (
           now - startedWaitingAt >= TURN_MAINTENANCE_LONG_WAIT_MS &&
           now - lastWaitNoticeAt >= TURN_MAINTENANCE_LONG_WAIT_MS

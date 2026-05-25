@@ -979,6 +979,18 @@ describe("subagent registry lifecycle hardening", () => {
       deliveryStatus: "failed",
       error: "gateway request timeout for agent",
     });
+    expectFields(
+      findCallArg(
+        taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId,
+        (arg) => arg.deliveryStatus === "pending",
+      ),
+      {
+        runId: entry.runId,
+        runtime: "subagent",
+        sessionKey: entry.childSessionKey,
+        deliveryStatus: "pending",
+      },
+    );
     expectFields(firstCallArg(taskExecutorMocks.completeTaskRunByRunId), {
       runId: entry.runId,
       runtime: "subagent",
@@ -1154,6 +1166,18 @@ describe("subagent registry lifecycle hardening", () => {
     });
     expect(entry.lastAnnounceDeliveryError).toBe(
       "UNAVAILABLE: requester wake failed; direct-primary: UNAVAILABLE: requester wake failed",
+    );
+    expectFields(
+      findCallArg(
+        taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId,
+        (arg) => arg.deliveryStatus === "pending",
+      ),
+      {
+        runId: entry.runId,
+        runtime: "subagent",
+        sessionKey: entry.childSessionKey,
+        deliveryStatus: "pending",
+      },
     );
     expect(entry.pendingFinalDelivery).toBe(true);
     expect(entry.pendingFinalDeliveryPayload).toMatchObject({

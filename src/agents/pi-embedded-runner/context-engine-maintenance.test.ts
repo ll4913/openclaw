@@ -1362,6 +1362,77 @@ describe("runContextEngineMaintenance", () => {
     });
   });
 
+  it("times out deferred maintenance instead of waiting forever on a busy session lane", async () => {
+    await withStateDirEnv("openclaw-turn-maintenance-", async () => {
+      vi.useFakeTimers();
+      try {
+        resetCommandQueueStateForTest();
+        resetTaskRegistryForTests({ persist: false });
+        resetTaskFlowRegistryForTests({ persist: false });
+        resetSystemEventsForTest();
+
+        const sessionKey = "agent:main:session-wait-timeout";
+        const sessionLane = resolveSessionLane(sessionKey);
+        const foregroundTurn = enqueueCommandInLane(sessionLane, async () => {
+          await new Promise<void>(() => undefined);
+        });
+        await Promise.resolve();
+
+        const maintain = vi.fn(async () => ({
+          changed: false,
+          bytesFreed: 0,
+          rewrittenEntries: 0,
+        }));
+        const backgroundEngine = {
+          info: {
+            id: "test",
+            name: "Test Engine",
+            turnMaintenanceMode: "background" as const,
+          },
+          ingest: async () => ({ ingested: true }),
+          assemble: async ({ messages }: { messages: unknown[] }) => ({
+            messages,
+            estimatedTokens: 0,
+          }),
+          compact: async () => ({ ok: true, compacted: false }),
+          maintain,
+        } as NonNullable<Parameters<typeof runContextEngineMaintenance>[0]["contextEngine"]>;
+
+        await runContextEngineMaintenance({
+          contextEngine: backgroundEngine,
+          sessionId: "session-wait-timeout",
+          sessionKey,
+          sessionFile: "/tmp/session-wait-timeout.jsonl",
+          reason: "turn",
+        });
+
+        await vi.advanceTimersByTimeAsync(5 * 60_000 + 500);
+        await waitForAssertion(() =>
+          expectSystemEventContaining(
+            sessionKey,
+            "Background task timed out: Context engine turn maintenance",
+          ),
+        );
+
+        const tasks = listTasksForOwnerKey(sessionKey).filter(
+          (task) => task.taskKind === TURN_MAINTENANCE_TASK_KIND,
+        );
+        expect(tasks).toHaveLength(1);
+        const task = requireRecord(tasks[0], "timed-out task");
+        expectRecordFields(task, {
+          status: "timed_out",
+          notifyPolicy: "state_changes",
+        });
+        expect(String(task.terminalSummary)).toContain("session lane to go idle");
+        expect(maintain).not.toHaveBeenCalled();
+        void foregroundTurn;
+      } finally {
+        resetCommandQueueStateForTest();
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("surfaces deferred maintenance failures even when they fail quickly", async () => {
     await withStateDirEnv("openclaw-turn-maintenance-", async () => {
       vi.useFakeTimers();
