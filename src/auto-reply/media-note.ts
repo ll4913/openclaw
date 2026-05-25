@@ -25,12 +25,27 @@ function normalizeManagedInboundMediaRef(value: string): string {
   return `media://inbound/${path.basename(candidate)}`;
 }
 
-function sanitizeInlineMediaNoteValue(value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return "";
+function isManagedInboundMediaRef(value: string): boolean {
+  if (!path.isAbsolute(value)) {
+    return false;
   }
-  return normalizeManagedInboundMediaRef(trimmed)
+  const mediaDir = stripDarwinPrivatePrefix(path.resolve(getMediaDir()));
+  const candidate = stripDarwinPrivatePrefix(path.resolve(value));
+  const inboundDir = path.join(mediaDir, "inbound");
+  const relativeToInbound = path.relative(inboundDir, candidate);
+  return Boolean(
+    relativeToInbound && !relativeToInbound.startsWith("..") && !path.isAbsolute(relativeToInbound),
+  );
+}
+
+function sanitizeMediaNoteValue(
+  value: string,
+  opts: { preserveManagedInboundPaths?: boolean },
+): string {
+  const displayValue = opts.preserveManagedInboundPaths
+    ? value
+    : normalizeManagedInboundMediaRef(value);
+  return displayValue
     .replace(/[\p{Cc}\]]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -42,15 +57,19 @@ function formatMediaAttachedLine(params: {
   type?: string;
   index?: number;
   total?: number;
+  preserveManagedInboundPaths?: boolean;
 }): string {
   const prefix =
     typeof params.index === "number" && typeof params.total === "number"
       ? `[media attached ${params.index}/${params.total}: `
       : "[media attached: ";
-  const path = sanitizeInlineMediaNoteValue(params.path);
-  const typeRaw = sanitizeInlineMediaNoteValue(params.type);
+  const options = {
+    preserveManagedInboundPaths: params.preserveManagedInboundPaths === true,
+  };
+  const path = sanitizeMediaNoteValue(params.path, options);
+  const typeRaw = params.type ? sanitizeMediaNoteValue(params.type, options) : "";
   const typePart = typeRaw ? ` (${typeRaw})` : "";
-  const urlRaw = sanitizeInlineMediaNoteValue(params.url);
+  const urlRaw = params.url ? sanitizeMediaNoteValue(params.url, options) : "";
   const urlPart = urlRaw ? ` | ${urlRaw}` : "";
   return `${prefix}${path}${typePart}${urlPart}]`;
 }
@@ -124,7 +143,10 @@ function collectTranscribedAudioAttachmentIndices(
   return transcribedAudioIndices;
 }
 
-export function buildInboundMediaNote(ctx: MsgContext): string | undefined {
+export function buildInboundMediaNote(
+  ctx: MsgContext,
+  opts: { onlyManagedInboundPaths?: boolean; preserveManagedInboundPaths?: boolean } = {},
+): string | undefined {
   // Attachment indices follow MediaPaths/MediaUrls ordering as supplied by the channel.
   const pathsFromArray = Array.isArray(ctx.MediaPaths) ? ctx.MediaPaths : undefined;
   const paths =
@@ -160,6 +182,9 @@ export function buildInboundMediaNote(ctx: MsgContext): string | undefined {
       index,
     }))
     .filter((entry) => {
+      if (opts.onlyManagedInboundPaths && !isManagedInboundMediaRef(entry.path)) {
+        return false;
+      }
       // Strip audio attachments when transcription succeeded - the transcript is already
       // available in the context, raw audio binary would only waste tokens (issue #4197)
       // Note: Only trust MIME type from per-entry types array, not fallback ctx.MediaType
@@ -187,6 +212,7 @@ export function buildInboundMediaNote(ctx: MsgContext): string | undefined {
       path: entries[0]?.path ?? "",
       type: entries[0]?.type,
       url: entries[0]?.url,
+      preserveManagedInboundPaths: opts.preserveManagedInboundPaths,
     });
   }
 
@@ -200,6 +226,7 @@ export function buildInboundMediaNote(ctx: MsgContext): string | undefined {
         total: count,
         type: entry.type,
         url: entry.url,
+        preserveManagedInboundPaths: opts.preserveManagedInboundPaths,
       }),
     );
   }

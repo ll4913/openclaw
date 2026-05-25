@@ -100,6 +100,51 @@ describe("buildTelegramMessageContext thread binding override", () => {
     expect(ctx?.turn.record.updateLastRoute).toBeUndefined();
   });
 
+  it("preserves uploaded document media paths for bound forum topic messages", async () => {
+    resolveTelegramConversationRouteMock.mockReturnValue(
+      createBoundRoute({
+        accountId: "default",
+        sessionKey: "agent:codex-acp:session-1",
+        agentId: "codex-acp",
+      }),
+    );
+
+    const ctx = await buildTelegramMessageContextForTest({
+      sessionRuntime: threadBindingSessionRuntime,
+      allMedia: [
+        {
+          path: "/tmp/openclaw/media/inbound/snapshot-quarter-skill---topic.zip",
+          contentType: "application/zip",
+        },
+      ],
+      message: {
+        ...createForumTopicMessage(),
+        text: undefined,
+        caption: "@bot Price intelligence增加一个snapshot的功能，附件是skill供你参考",
+        caption_entities: [{ type: "mention", offset: 0, length: 4 }],
+        document: {
+          file_id: "doc-topic-1",
+          file_unique_id: "doc-topic-u1",
+          file_name: "snapshot-quarter-skill.zip",
+          mime_type: "application/zip",
+        },
+      },
+      options: { forceWasMentioned: true },
+      resolveGroupActivation: () => true,
+    });
+
+    expect(ctx?.ctxPayload?.SessionKey).toBe("agent:codex-acp:session-1");
+    expect(ctx?.ctxPayload?.BodyForAgent).toContain("Price intelligence增加一个snapshot");
+    expect(ctx?.ctxPayload?.MediaPath).toBe(
+      "/tmp/openclaw/media/inbound/snapshot-quarter-skill---topic.zip",
+    );
+    expect(ctx?.ctxPayload?.MediaPaths).toEqual([
+      "/tmp/openclaw/media/inbound/snapshot-quarter-skill---topic.zip",
+    ]);
+    expect(ctx?.ctxPayload?.MediaType).toBe("application/zip");
+    expect(ctx?.ctxPayload?.MediaTypes).toEqual(["application/zip"]);
+  });
+
   it("treats named-account bound conversations as explicit route matches", async () => {
     resolveTelegramConversationRouteMock.mockReturnValue(
       createBoundRoute({
@@ -151,6 +196,51 @@ describe("buildTelegramMessageContext thread binding override", () => {
     expect(routeArgs.replyThreadId).toBeUndefined();
     expect(routeArgs.senderId).toBe("42");
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:codex-acp:session-dm");
+  });
+
+  it("preserves uploaded document media paths for bound DM messages", async () => {
+    resolveTelegramConversationRouteMock.mockReturnValue(
+      createBoundRoute({
+        accountId: "default",
+        sessionKey: "agent:codex-acp:session-dm",
+        agentId: "codex-acp",
+      }),
+    );
+
+    const ctx = await buildTelegramMessageContextForTest({
+      sessionRuntime: threadBindingSessionRuntime,
+      allMedia: [
+        {
+          path: "/tmp/openclaw/media/inbound/snapshot-quarter-skill---dm.zip",
+          contentType: "application/zip",
+        },
+      ],
+      message: {
+        message_id: 1,
+        chat: { id: 1234, type: "private" },
+        date: 1_700_000_000,
+        text: undefined,
+        caption: "请读取这个 skill zip",
+        from: { id: 42, first_name: "Alice" },
+        document: {
+          file_id: "doc-dm-1",
+          file_unique_id: "doc-dm-u1",
+          file_name: "snapshot-quarter-skill.zip",
+          mime_type: "application/zip",
+        },
+      },
+    });
+
+    expect(ctx?.ctxPayload?.SessionKey).toBe("agent:codex-acp:session-dm");
+    expect(ctx?.ctxPayload?.BodyForAgent).toBe("请读取这个 skill zip");
+    expect(ctx?.ctxPayload?.MediaPath).toBe(
+      "/tmp/openclaw/media/inbound/snapshot-quarter-skill---dm.zip",
+    );
+    expect(ctx?.ctxPayload?.MediaPaths).toEqual([
+      "/tmp/openclaw/media/inbound/snapshot-quarter-skill---dm.zip",
+    ]);
+    expect(ctx?.ctxPayload?.MediaType).toBe("application/zip");
+    expect(ctx?.ctxPayload?.MediaTypes).toEqual(["application/zip"]);
   });
 
   it("preserves Telegram DM topic thread IDs in the inbound context", async () => {

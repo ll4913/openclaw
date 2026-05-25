@@ -29,6 +29,35 @@ describe("buildInboundMediaNote", () => {
     );
   });
 
+  it("can preserve managed inbound paths for runtimes that read local uploads directly", () => {
+    const inboundPath = path.join(getMediaDir(), "inbound", "snapshot-quarter-skill---abc123.zip");
+    const note = buildInboundMediaNote(
+      {
+        MediaPath: inboundPath,
+        MediaType: "application/zip",
+        MediaUrl: inboundPath,
+      },
+      { preserveManagedInboundPaths: true },
+    );
+    expect(note).toBe(`[media attached: ${inboundPath} (application/zip) | ${inboundPath}]`);
+  });
+
+  it("can omit non-managed local paths when preserving upload paths for ACP", () => {
+    const inboundPath = path.join(getMediaDir(), "inbound", "snapshot-quarter-skill---abc123.zip");
+    const note = buildInboundMediaNote(
+      {
+        MediaPaths: ["/tmp/outside-root.pdf", inboundPath],
+        MediaTypes: ["application/pdf", "application/zip"],
+        MediaUrls: ["/tmp/outside-root.pdf", inboundPath],
+      },
+      {
+        onlyManagedInboundPaths: true,
+        preserveManagedInboundPaths: true,
+      },
+    );
+    expect(note).toBe(`[media attached: ${inboundPath} (application/zip) | ${inboundPath}]`);
+  });
+
   it("formats multiple MediaPaths as numbered media notes", () => {
     const note = buildInboundMediaNote({
       MediaPaths: ["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"],

@@ -31,6 +31,7 @@ import {
 import { resolveStatusTtsSnapshot } from "../../tts/status-config.js";
 import { resolveConfiguredTtsMode } from "../../tts/tts-config.js";
 import type { SourceReplyDeliveryMode } from "../get-reply-options.types.js";
+import { buildInboundMediaNote } from "../media-note.js";
 import { markReplyPayloadAsTtsSupplement } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { createAcpReplyProjector } from "./acp-projector.js";
@@ -125,13 +126,24 @@ function resolveFirstContextText(
 }
 
 function resolveAcpPromptText(ctx: FinalizedMsgContext): string {
-  return resolveFirstContextText(ctx, [
+  const promptText = resolveFirstContextText(ctx, [
     "BodyForAgent",
     "BodyForCommands",
     "CommandBody",
     "RawBody",
     "Body",
   ]).trim();
+  const mediaNote = buildInboundMediaNote(ctx, {
+    onlyManagedInboundPaths: true,
+    preserveManagedInboundPaths: true,
+  });
+  if (!mediaNote) {
+    return promptText;
+  }
+  return [mediaNote, promptText || "[User sent media without caption]"]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 function resolveAcpRequestId(ctx: FinalizedMsgContext): string {

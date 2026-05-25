@@ -7,6 +7,7 @@ import type { AcpSessionStoreEntry } from "../../acp/runtime/session-meta.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import type { MediaUnderstandingSkipError } from "../../media-understanding/errors.js";
+import { getMediaDir } from "../../media/store.js";
 import { withFetchPreconnect } from "../../test-utils/fetch-mock.js";
 import {
   resolveAgentAttachments,
@@ -555,6 +556,58 @@ describe("tryDispatchAcpReply", () => {
     await runDispatch({ bodyForAgent: "hello world" });
 
     expect(runTurnCall().text).toBe("hello world");
+  });
+
+  it("includes current-turn Telegram document paths in bound ACP prompts", async () => {
+    setReadyAcpResolution();
+    const documentPath = path.join(
+      getMediaDir(),
+      "inbound",
+      "snapshot-quarter-skill---9290c0f5-dac2-4cd3-a355-471020bbe245.zip",
+    );
+
+    await runDispatch({
+      bodyForAgent: "Price intelligence增加一个snapshot的功能，附件是skill供你参考",
+      ctxOverrides: {
+        Provider: "telegram",
+        Surface: "telegram",
+        OriginatingChannel: "telegram",
+        MediaPath: documentPath,
+        MediaPaths: [documentPath],
+        MediaType: "application/zip",
+        MediaTypes: ["application/zip"],
+      },
+    });
+
+    expect(managerMocks.runTurn).toHaveBeenCalledTimes(1);
+    const text = String(runTurnCall().text);
+    expect(text).toContain(documentPath);
+    expect(text).toContain("application/zip");
+    expect(text).toContain("Price intelligence增加一个snapshot的功能");
+  });
+
+  it("dispatches captionless Telegram document uploads to ACP with the local media path", async () => {
+    setReadyAcpResolution();
+    const documentPath = path.join(getMediaDir(), "inbound", "business-plan---doc.zip");
+
+    await runDispatch({
+      bodyForAgent: "   ",
+      ctxOverrides: {
+        Provider: "telegram",
+        Surface: "telegram",
+        OriginatingChannel: "telegram",
+        MediaPath: documentPath,
+        MediaPaths: [documentPath],
+        MediaType: "application/zip",
+        MediaTypes: ["application/zip"],
+      },
+    });
+
+    expect(managerMocks.runTurn).toHaveBeenCalledTimes(1);
+    const text = String(runTurnCall().text);
+    expect(text).toContain(documentPath);
+    expect(text).toContain("application/zip");
+    expect(text).toContain("[User sent media without caption]");
   });
 
   it("routes default ACP output to the originating channel as a final reply", async () => {
