@@ -1523,6 +1523,56 @@ describe("short-term promotion", () => {
     });
   });
 
+  it("skips oversized source files before rehydrating promotion candidates", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const notePath = await writeDailyMemoryNote(workspaceDir, "2026-04-01", [
+        "Moved backups to S3 Glacier.",
+      ]);
+      await fs.truncate(notePath, 16 * 1024 * 1024 + 1);
+      await recordShortTermRecalls({
+        workspaceDir,
+        query: "glacier",
+        results: [
+          {
+            path: "memory/2026-04-01.md",
+            startLine: 1,
+            endLine: 1,
+            score: 0.94,
+            snippet: "Moved backups to S3 Glacier.",
+            source: "memory",
+          },
+        ],
+      });
+
+      const ranked = await rankShortTermPromotionCandidates({
+        workspaceDir,
+        minScore: 0,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+      });
+      const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      const readFile = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        if (String(args[0]) === notePath) {
+          throw new Error("oversized promotion source should not be read");
+        }
+        return await actualFs.readFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        const applied = await applyShortTermPromotions({
+          workspaceDir,
+          candidates: ranked,
+          minScore: 0,
+          minRecallCount: 0,
+          minUniqueQueries: 0,
+        });
+        expect(applied.applied).toBe(0);
+      } finally {
+        readFile.mockRestore();
+      }
+    });
+  });
+
   it("prefers the nearest matching snippet when the same text appears multiple times", async () => {
     await withTempWorkspace(async (workspaceDir) => {
       await writeDailyMemoryNote(workspaceDir, "2026-04-01", [

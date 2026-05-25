@@ -46,6 +46,11 @@ const STARTUP_CRON_RETRY_MAX_ATTEMPTS = 12;
 const HEARTBEAT_ISOLATED_SESSION_SUFFIX = ":heartbeat";
 
 type Logger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error">;
+type UserWorkloadSnapshot = {
+  activeReplyRuns?: number;
+  pendingReplies?: number;
+};
+type UserWorkloadSnapshotProvider = () => UserWorkloadSnapshot | undefined;
 
 type CronSchedule = { kind: "cron"; expr: string; tz?: string };
 type CronPayload =
@@ -76,6 +81,35 @@ type ManagedCronJobPatch = {
     mode: "none";
   };
 };
+
+function normalizeWorkloadCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function resolveActiveUserWorkload(
+  getUserWorkloadSnapshot: UserWorkloadSnapshotProvider | undefined,
+): { activeReplyRuns: number; pendingReplies: number } | undefined {
+  const snapshot = getUserWorkloadSnapshot?.();
+  const activeReplyRuns = normalizeWorkloadCount(snapshot?.activeReplyRuns);
+  const pendingReplies = normalizeWorkloadCount(snapshot?.pendingReplies);
+  if (activeReplyRuns <= 0 && pendingReplies <= 0) {
+    return undefined;
+  }
+  return { activeReplyRuns, pendingReplies };
+}
+
+function formatUserWorkload(workload: { activeReplyRuns: number; pendingReplies: number }): string {
+  return `activeReplyRuns=${workload.activeReplyRuns} pendingReplies=${workload.pendingReplies}`;
+}
+
+async function yieldDreamingPromotionWork(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+}
 
 type ManagedCronJobLike = {
   id: string;
@@ -498,6 +532,7 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
   config: ShortTermPromotionDreamingConfig;
   logger: Logger;
   subagent?: Parameters<typeof generateAndAppendDreamNarrative>[0]["subagent"];
+  getUserWorkloadSnapshot?: UserWorkloadSnapshotProvider;
 }): Promise<{ handled: true; reason: string } | undefined> {
   if (params.trigger !== "heartbeat" && params.trigger !== "cron") {
     return undefined;
@@ -539,6 +574,15 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
     params.logger.info("memory-core: dreaming promotion skipped because limit=0.");
     return { handled: true, reason: "memory-core: short-term dreaming disabled by limit" };
   }
+  if (params.trigger === "cron") {
+    const workload = resolveActiveUserWorkload(params.getUserWorkloadSnapshot);
+    if (workload) {
+      params.logger.info(
+        `memory-core: dreaming promotion deferred because user-facing reply work is active (${formatUserWorkload(workload)}).`,
+      );
+      return { handled: true, reason: "memory-core: short-term dreaming deferred for user work" };
+    }
+  }
 
   if (params.config.verboseLogging) {
     params.logger.info(
@@ -551,7 +595,25 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
   let failedWorkspaces = 0;
   const pluginConfig = params.cfg ? resolveMemoryCorePluginConfig(params.cfg) : undefined;
   const detachNarratives = params.trigger === "cron";
+  const shouldRunDetachedNarrative =
+    params.trigger === "cron"
+      ? () => !resolveActiveUserWorkload(params.getUserWorkloadSnapshot)
+      : undefined;
+  let visitedWorkspaces = 0;
   for (const workspaceDir of workspaces) {
+    if (visitedWorkspaces > 0) {
+      await yieldDreamingPromotionWork();
+      if (params.trigger === "cron") {
+        const workload = resolveActiveUserWorkload(params.getUserWorkloadSnapshot);
+        if (workload) {
+          params.logger.info(
+            `memory-core: dreaming promotion paused after ${visitedWorkspaces} workspace(s) because user-facing reply work became active (${formatUserWorkload(workload)}).`,
+          );
+          break;
+        }
+      }
+    }
+    visitedWorkspaces += 1;
     try {
       const sweepNowMs = Date.now();
       await runDreamingSweepPhases({
@@ -561,6 +623,7 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
         logger: params.logger,
         subagent: params.subagent,
         detachNarratives,
+        shouldRunDetachedNarrative,
         nowMs: sweepNowMs,
       });
 
@@ -648,6 +711,8 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
             timezone: params.config.timezone,
             model: params.config.execution?.model,
             logger: params.logger,
+            shouldRun: shouldRunDetachedNarrative,
+            skipReason: "user-facing reply work is active",
           });
         } else {
           await generateAndAppendDreamNarrative({
@@ -903,6 +968,7 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
         config,
         logger: api.logger,
         subagent: config.enabled ? api.runtime?.subagent : undefined,
+        getUserWorkloadSnapshot: api.runtime?.system?.getUserWorkloadSnapshot,
       });
     } catch (err) {
       api.logger.error(`memory-core: dreaming trigger failed: ${formatErrorMessage(err)}`);

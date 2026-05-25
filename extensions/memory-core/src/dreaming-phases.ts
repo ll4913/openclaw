@@ -36,6 +36,7 @@ import {
 
 type Logger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error">;
 type DreamingHostConfig = unknown;
+type DetachedNarrativeShouldRun = () => boolean | Promise<boolean>;
 type DreamingPhaseStorageConfig = {
   timezone?: string;
   storage: { mode: "inline" | "separate" | "both"; separateReports: boolean };
@@ -94,6 +95,7 @@ const SESSION_INGESTION_MAX_MESSAGES_PER_FILE = 80;
 const SESSION_INGESTION_MIN_MESSAGES_PER_FILE = 12;
 const SESSION_INGESTION_MAX_TRACKED_MESSAGES_PER_SESSION = 4096;
 const SESSION_INGESTION_MAX_TRACKED_SCOPES = 2048;
+const DREAMING_SOURCE_FILE_MAX_BYTES = 16 * 1024 * 1024;
 const SESSION_CHECKPOINT_TRANSCRIPT_FILENAME_RE = /\.checkpoint\..+\.jsonl$/i;
 const GENERIC_DAY_HEADING_RE =
   /^(?:(?:mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)(?:,\s+)?)?(?:(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\d{4}[/-]\d{2}[/-]\d{2})$/i;
@@ -109,6 +111,12 @@ const MANAGED_DAILY_DREAMING_BLOCKS = [
     endMarker: "<!-- openclaw:dreaming:rem:end -->",
   },
 ] as const;
+
+async function yieldDreamingWork(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+}
 
 function resolveWorkspaces(params: {
   cfg?: DreamingHostConfig;
@@ -856,6 +864,7 @@ async function collectSessionIngestionBatches(params: {
       mtimeMs: Math.floor(Math.max(0, stat.mtimeMs)),
       size: Math.floor(Math.max(0, stat.size)),
     };
+    await yieldDreamingWork();
     const cursorAtEnd = previous !== undefined && previous.lastContentLine >= previous.lineCount;
     const unchanged =
       Boolean(previous) &&
@@ -1160,11 +1169,27 @@ async function collectDailyIngestionBatches(params: {
       previous.mtimeMs === fingerprint.mtimeMs &&
       previous.size === fingerprint.size;
     const previousDreamingDay = normalizeMemoryDay(previous?.lastDreamingDayIngested);
+    await yieldDreamingWork();
     if (unchanged && previousDreamingDay === params.ingestionDreamingDay) {
       nextFiles[relativePath] = {
         ...fingerprint,
         lastDreamingDayIngested: previousDreamingDay,
       };
+      continue;
+    }
+    if (stat.size > DREAMING_SOURCE_FILE_MAX_BYTES) {
+      nextFiles[relativePath] = {
+        ...fingerprint,
+        lastDreamingDayIngested: params.ingestionDreamingDay,
+      };
+      if (
+        !previous ||
+        previous.mtimeMs !== fingerprint.mtimeMs ||
+        previous.size !== fingerprint.size ||
+        previousDreamingDay !== params.ingestionDreamingDay
+      ) {
+        changed = true;
+      }
       continue;
     }
     changed = true;
@@ -1332,6 +1357,18 @@ export async function seedHistoricalDailyMemorySignals(params: {
     if (importedSignalCount >= totalCap) {
       break;
     }
+    const stat = await fs.stat(entry.filePath).catch((err: unknown) => {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        skippedPaths.push(entry.filePath);
+        return null;
+      }
+      throw err;
+    });
+    if (!stat?.isFile() || stat.size > DREAMING_SOURCE_FILE_MAX_BYTES) {
+      skippedPaths.push(entry.filePath);
+      continue;
+    }
+    await yieldDreamingWork();
     const raw = await fs.readFile(entry.filePath, "utf-8").catch((err: unknown) => {
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
         skippedPaths.push(entry.filePath);
@@ -1606,6 +1643,7 @@ async function runLightDreaming(params: {
   logger: Logger;
   subagent?: Parameters<typeof generateAndAppendDreamNarrative>[0]["subagent"];
   detachNarratives?: boolean;
+  shouldRunDetachedNarrative?: DetachedNarrativeShouldRun;
   nowMs?: number;
 }): Promise<void> {
   const nowMs = Number.isFinite(params.nowMs) ? (params.nowMs as number) : Date.now();
@@ -1682,6 +1720,8 @@ async function runLightDreaming(params: {
         timezone: params.config.timezone,
         model: params.config.execution?.model,
         logger: params.logger,
+        shouldRun: params.shouldRunDetachedNarrative,
+        skipReason: "user-facing reply work is active",
       });
     } else {
       await generateAndAppendDreamNarrative({
@@ -1705,6 +1745,7 @@ async function runRemDreaming(params: {
   logger: Logger;
   subagent?: Parameters<typeof generateAndAppendDreamNarrative>[0]["subagent"];
   detachNarratives?: boolean;
+  shouldRunDetachedNarrative?: DetachedNarrativeShouldRun;
   nowMs?: number;
 }): Promise<void> {
   const nowMs = Number.isFinite(params.nowMs) ? (params.nowMs as number) : Date.now();
@@ -1781,6 +1822,8 @@ async function runRemDreaming(params: {
         timezone: params.config.timezone,
         model: params.config.execution?.model,
         logger: params.logger,
+        shouldRun: params.shouldRunDetachedNarrative,
+        skipReason: "user-facing reply work is active",
       });
     } else {
       await generateAndAppendDreamNarrative({
@@ -1803,6 +1846,7 @@ export async function runDreamingSweepPhases(params: {
   logger: Logger;
   subagent?: Parameters<typeof generateAndAppendDreamNarrative>[0]["subagent"];
   detachNarratives?: boolean;
+  shouldRunDetachedNarrative?: DetachedNarrativeShouldRun;
   nowMs?: number;
 }): Promise<void> {
   // Normalize nowMs once so all phase timestamps and narrative session keys are consistent.
@@ -1821,8 +1865,11 @@ export async function runDreamingSweepPhases(params: {
       subagent: params.subagent,
       nowMs: sweepNowMs,
       detachNarratives: params.detachNarratives,
+      shouldRunDetachedNarrative: params.shouldRunDetachedNarrative,
     });
   }
+
+  await yieldDreamingWork();
 
   const rem = resolveMemoryRemDreamingConfig({
     pluginConfig: params.pluginConfig,
@@ -1837,6 +1884,7 @@ export async function runDreamingSweepPhases(params: {
       subagent: params.subagent,
       nowMs: sweepNowMs,
       detachNarratives: params.detachNarratives,
+      shouldRunDetachedNarrative: params.shouldRunDetachedNarrative,
     });
   }
 }

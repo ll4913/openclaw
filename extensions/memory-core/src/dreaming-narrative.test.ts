@@ -1117,7 +1117,7 @@ describe("runDetachedDreamNarrative", () => {
     }
   }
 
-  it("caps the number of in-flight detached narratives at 3", async () => {
+  it("keeps detached narratives serial", async () => {
     const { subagent, runDeferreds } = createBlockingSubagent();
     const workspaceDirs = await Promise.all(
       Array.from({ length: 5 }, () => createTempWorkspace("openclaw-dreaming-detach-")),
@@ -1136,8 +1136,8 @@ describe("runDetachedDreamNarrative", () => {
 
     await drainMicrotasks();
 
-    // Only the first 3 should have reached subagent.run; the rest are queued.
-    expect(subagent.run).toHaveBeenCalledTimes(3);
+    // Only the first background narrative should have reached subagent.run; the rest are queued.
+    expect(subagent.run).toHaveBeenCalledTimes(1);
 
     // Drain the rest so module-level concurrency state does not leak into
     // subsequent tests. The mock subagent creates a new deferred every time
@@ -1162,6 +1162,29 @@ describe("runDetachedDreamNarrative", () => {
     });
     expect(subagent.run).toHaveBeenCalledTimes(5);
     expect(subagent.waitForRun).toHaveBeenCalledTimes(5);
+  });
+
+  it("skips queued detached narratives when the workload guard closes", async () => {
+    const { subagent } = createBlockingSubagent();
+    const workspaceDir = await createTempWorkspace("openclaw-dreaming-detach-guard-");
+    const logger = createMockLogger();
+
+    runDetachedDreamNarrative({
+      subagent,
+      workspaceDir,
+      data: { phase: "light", snippets: ["fragment"] },
+      nowMs: Date.parse("2026-04-28T03:00:00Z"),
+      logger,
+      shouldRun: () => false,
+      skipReason: "user-facing reply work is active",
+    });
+
+    await drainMicrotasks();
+
+    expect(subagent.run).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      "memory-core: detached dreaming narrative skipped (user-facing reply work is active).",
+    );
   });
 
   it("serializes detached narratives that reuse a workspace and phase session", async () => {

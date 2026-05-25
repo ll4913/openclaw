@@ -1,3 +1,8 @@
+import { getTotalPendingReplies } from "../../auto-reply/reply/dispatcher-registry.js";
+import {
+  getActiveReplyRunCount,
+  listActiveReplyRunSessionKeys,
+} from "../../auto-reply/reply/reply-run-registry.js";
 import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
@@ -40,6 +45,11 @@ export function createRuntimeSystem(): PluginRuntime["system"] {
         heartbeat: heartbeat ? { target: heartbeat.target } : undefined,
       });
     },
+    getUserWorkloadSnapshot: () => ({
+      activeReplyRuns: getActiveReplyRunCount(),
+      pendingReplies: getTotalPendingReplies(),
+      activeReplySessionKeys: listActiveReplyRunSessionKeys(),
+    }),
     runCommandWithTimeout,
     formatNativeDependencyHint,
   };

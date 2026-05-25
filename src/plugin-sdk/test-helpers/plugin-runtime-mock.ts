@@ -423,6 +423,11 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
         status: "ran" as const,
         durationMs: 0,
       })) as unknown as PluginRuntime["system"]["runHeartbeatOnce"],
+      getUserWorkloadSnapshot: vi.fn(() => ({
+        activeReplyRuns: 0,
+        pendingReplies: 0,
+        activeReplySessionKeys: [],
+      })) as unknown as PluginRuntime["system"]["getUserWorkloadSnapshot"],
       runCommandWithTimeout: vi.fn() as unknown as PluginRuntime["system"]["runCommandWithTimeout"],
       formatNativeDependencyHint: vi.fn(
         () => "",

@@ -34,6 +34,7 @@ const SHORT_TERM_LOCK_RELATIVE_PATH = path.join("memory", ".dreams", "short-term
 const SHORT_TERM_LOCK_WAIT_TIMEOUT_MS = 10_000;
 const SHORT_TERM_LOCK_STALE_MS = 60_000;
 const SHORT_TERM_LOCK_RETRY_DELAY_MS = 40;
+const PROMOTION_SOURCE_FILE_MAX_BYTES = 16 * 1024 * 1024;
 // Repeated dreaming revisits should be able to clear the default promotion gate
 // without requiring separate organic recall traffic for the same snippet.
 const PHASE_SIGNAL_LIGHT_BOOST_MAX = 0.06;
@@ -1541,6 +1542,10 @@ async function rehydratePromotionCandidate(
   for (const sourcePath of sourcePaths) {
     let rawSource: string;
     try {
+      const stat = await fs.stat(sourcePath);
+      if (!stat.isFile() || stat.size > PROMOTION_SOURCE_FILE_MAX_BYTES) {
+        continue;
+      }
       rawSource = await fs.readFile(sourcePath, "utf-8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {

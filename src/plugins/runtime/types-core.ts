@@ -88,6 +88,12 @@ export type RunHeartbeatOnceOptions = {
   heartbeat?: { target?: string };
 };
 
+export type RuntimeUserWorkloadSnapshot = {
+  activeReplyRuns: number;
+  pendingReplies: number;
+  activeReplySessionKeys: string[];
+};
+
 export type LlmCompleteMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -234,6 +240,7 @@ export type PluginRuntimeCore = {
      * uses to avoid the default `target: "none"` suppression.
      */
     runHeartbeatOnce: (opts?: RunHeartbeatOnceOptions) => Promise<HeartbeatRunResult>;
+    getUserWorkloadSnapshot: () => RuntimeUserWorkloadSnapshot;
     runCommandWithTimeout: typeof import("../../process/exec.js").runCommandWithTimeout;
     formatNativeDependencyHint: typeof import("./native-deps.js").formatNativeDependencyHint;
   };

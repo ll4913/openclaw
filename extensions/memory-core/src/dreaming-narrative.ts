@@ -1073,8 +1073,10 @@ export async function generateAndAppendDreamNarrative(params: {
 //
 // `runDetachedDreamNarrative` wraps `generateAndAppendDreamNarrative` with a
 // FIFO queue capped at `DETACHED_NARRATIVE_CONCURRENCY` so the total in-flight
-// detached narratives across phases/workspaces stays bounded.
-const DETACHED_NARRATIVE_CONCURRENCY = 3;
+// detached narratives across phases/workspaces stays bounded. Keep cron diary
+// prose strictly serial; it is background polish and must not compete with
+// user-visible turns on the gateway event loop.
+const DETACHED_NARRATIVE_CONCURRENCY = 1;
 
 let activeDetachedNarratives = 0;
 const detachedNarrativeQueue: Array<() => void> = [];
@@ -1093,14 +1095,35 @@ async function acquireDetachedNarrativeSlot(): Promise<void> {
   activeDetachedNarratives += 1;
 }
 
-export function runDetachedDreamNarrative(
-  params: Parameters<typeof generateAndAppendDreamNarrative>[0],
-): void {
+type DetachedDreamNarrativeParams = Parameters<typeof generateAndAppendDreamNarrative>[0] & {
+  shouldRun?: () => boolean | Promise<boolean>;
+  skipReason?: string;
+};
+
+export function runDetachedDreamNarrative(params: DetachedDreamNarrativeParams): void {
   queueMicrotask(() => {
     void (async () => {
       await acquireDetachedNarrativeSlot();
       try {
-        await generateAndAppendDreamNarrative(params);
+        const { shouldRun, skipReason, ...narrativeParams } = params;
+        if (shouldRun) {
+          let allowed = false;
+          try {
+            allowed = await shouldRun();
+          } catch (err) {
+            params.logger.warn(
+              `memory-core: detached dreaming narrative skipped because the workload check failed: ${formatErrorMessage(err)}`,
+            );
+            return;
+          }
+          if (!allowed) {
+            params.logger.info(
+              `memory-core: detached dreaming narrative skipped${skipReason ? ` (${skipReason})` : ""}.`,
+            );
+            return;
+          }
+        }
+        await generateAndAppendDreamNarrative(narrativeParams);
       } catch {
         // Detached narratives intentionally swallow errors — callers (cron
         // sweeps) cannot recover, and surfacing here would only cause noisy

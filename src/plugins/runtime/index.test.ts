@@ -177,6 +177,12 @@ describe("plugin runtime command execution", () => {
       expected: "function",
     },
     {
+      name: "exposes runtime.system.getUserWorkloadSnapshot",
+      readValue: (runtime: ReturnType<typeof createPluginRuntime>) =>
+        typeof runtime.system.getUserWorkloadSnapshot,
+      expected: "function",
+    },
+    {
       name: "exposes runtime.version from the shared VERSION constant",
       readValue: (runtime: ReturnType<typeof createPluginRuntime>) => runtime.version,
       expected: VERSION,
