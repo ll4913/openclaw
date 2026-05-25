@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { isAcpTransientTransportErrorText } from "../acp/runtime/transport-errors.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { CRITICAL_RUNTIME_ARTIFACTS } from "../infra/runtime-artifact-guard.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 
 export type AgentQualityStatus = "pass" | "warn" | "fail";
@@ -1097,7 +1098,6 @@ async function analyzeEnvironmentDoctor(params: {
       missing.push(`${check.label} key source missing (${check.names.join("/")})`);
     }
   }
-  const telegramWorker = path.join(params.repoRoot, "dist/telegram-ingress-worker.runtime.js");
   const pathExists =
     params.deps.pathExists ??
     (async (filePath: string) => {
@@ -1108,10 +1108,13 @@ async function analyzeEnvironmentDoctor(params: {
         return false;
       }
     });
-  if (!(await pathExists(telegramWorker))) {
-    missing.push("dist/telegram-ingress-worker.runtime.js missing");
-  } else {
-    present.push("telegram ingress runtime artifact present");
+  for (const relativePath of CRITICAL_RUNTIME_ARTIFACTS) {
+    const artifactPath = path.join(params.repoRoot, relativePath);
+    if (!(await pathExists(artifactPath))) {
+      missing.push(`${relativePath} missing`);
+    } else {
+      present.push(`${relativePath} present`);
+    }
   }
   return {
     id: "environment-doctor",

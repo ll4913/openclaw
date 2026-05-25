@@ -30,6 +30,7 @@ import { setVerbose } from "../../globals.js";
 import { isTruthyEnvValue } from "../../infra/env.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { GatewayLockError } from "../../infra/gateway-lock.js";
+import { assertGatewayStartupRuntimeArtifactsPresent } from "../../infra/runtime-artifact-guard.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import { setConsoleSubsystemFilter, setConsoleTimestampPrefix } from "../../logging/console.js";
 import { withDiagnosticPhase } from "../../logging/diagnostic-phase.js";
@@ -511,6 +512,13 @@ export async function runGatewayCommand(opts: GatewayRunOpts) {
   }
 
   const startupTrace = createGatewayCliStartupTrace();
+  try {
+    assertGatewayStartupRuntimeArtifactsPresent();
+  } catch (err) {
+    defaultRuntime.error(formatErrorMessage(err));
+    defaultRuntime.exit(1);
+    return;
+  }
 
   // The heaviest part of gateway startup is loading the server module tree
   // (channels, plugins, HTTP stack, etc.). Show a spinner so the user sees

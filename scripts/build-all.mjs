@@ -34,6 +34,11 @@ export const BUILD_ALL_STEPS = [
     args: ["scripts/runtime-postbuild-stamp.mjs"],
   },
   {
+    label: "check-runtime-artifacts",
+    kind: "node",
+    args: ["--experimental-strip-types", "scripts/check-runtime-artifacts.ts"],
+  },
+  {
     label: "build:plugin-sdk:dts",
     kind: "pnpm",
     pnpmArgs: ["build:plugin-sdk:dts"],
@@ -110,6 +115,7 @@ export const BUILD_ALL_PROFILES = {
     "runtime-postbuild",
     "build-stamp",
     "runtime-postbuild-stamp",
+    "check-runtime-artifacts",
     "build:plugin-sdk:dts",
     "write-plugin-sdk-entry-dts",
     "check-plugin-sdk-exports",
@@ -126,6 +132,7 @@ export const BUILD_ALL_PROFILES = {
     "runtime-postbuild",
     "build-stamp",
     "runtime-postbuild-stamp",
+    "check-runtime-artifacts",
   ],
   cliStartup: [
     "tsdown",
@@ -133,6 +140,7 @@ export const BUILD_ALL_PROFILES = {
     "runtime-postbuild",
     "build-stamp",
     "runtime-postbuild-stamp",
+    "check-runtime-artifacts",
     "write-cli-startup-metadata",
     "write-cli-compat",
   ],

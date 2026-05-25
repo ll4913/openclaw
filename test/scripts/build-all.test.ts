@@ -165,6 +165,7 @@ describe("resolveBuildAllSteps", () => {
       "runtime-postbuild",
       "build-stamp",
       "runtime-postbuild-stamp",
+      "check-runtime-artifacts",
       "build:plugin-sdk:dts",
       "write-plugin-sdk-entry-dts",
       "check-plugin-sdk-exports",
@@ -184,6 +185,7 @@ describe("resolveBuildAllSteps", () => {
       "runtime-postbuild",
       "build-stamp",
       "runtime-postbuild-stamp",
+      "check-runtime-artifacts",
     ]);
   });
 
@@ -194,6 +196,7 @@ describe("resolveBuildAllSteps", () => {
       "runtime-postbuild",
       "build-stamp",
       "runtime-postbuild-stamp",
+      "check-runtime-artifacts",
       "write-cli-startup-metadata",
       "write-cli-compat",
     ]);

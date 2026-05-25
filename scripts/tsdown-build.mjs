@@ -23,8 +23,113 @@ const DEFAULT_TSDOWN_NODE_OPTIONS = "--max-old-space-size=6144";
 const DEFAULT_TSDOWN_MAX_OLD_SPACE_MB = 6144;
 const TERMINATION_GRACE_MS = 5_000;
 const TSDOWN_OUTPUT_ROOTS = ["dist", "dist-runtime"];
+const LIVE_DIST_CLEAN_OVERRIDE_ENV = "OPENCLAW_ALLOW_LIVE_DIST_CLEAN";
+const LIVE_DIST_CLEAN_PS_TIMEOUT_MS = 1_000;
 const GENERATED_SOURCE_DECLARATION_PATHSPEC = ":(glob)extensions/**/*.d.ts";
 const SOURCE_DECLARATION_SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs"];
+
+function normalizeCommandPath(filePath) {
+  return path.resolve(filePath).replaceAll("\\", "/");
+}
+
+function parsePsLine(line) {
+  const match = line.match(/^\s*(?<pid>\d+)\s+(?<command>.+?)\s*$/u);
+  if (!match?.groups) {
+    return null;
+  }
+  const pid = Number(match.groups.pid);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
+  return {
+    pid,
+    command: match.groups.command,
+  };
+}
+
+function commandLooksLikeGateway(command) {
+  return /(?:^|\s)gateway(?:\s|$)/u.test(command);
+}
+
+export function parseLiveGatewayDistCleanBlockers(stdout, params = {}) {
+  const cwd = params.cwd ?? process.cwd();
+  const currentPid = params.pid ?? process.pid;
+  const protectedEntries = [
+    path.join(cwd, "dist", "index.js"),
+    path.join(cwd, "dist", "entry.js"),
+  ].map(normalizeCommandPath);
+  const blockers = new Map();
+
+  for (const line of String(stdout ?? "").split(/\r?\n/u)) {
+    const parsed = parsePsLine(line);
+    if (!parsed || parsed.pid === currentPid) {
+      continue;
+    }
+    const normalizedCommand = parsed.command.replaceAll("\\", "/");
+    if (!commandLooksLikeGateway(normalizedCommand)) {
+      continue;
+    }
+    const entry = protectedEntries.find((candidate) => normalizedCommand.includes(candidate));
+    if (!entry) {
+      continue;
+    }
+    blockers.set(parsed.pid, {
+      pid: parsed.pid,
+      command: parsed.command,
+      entry,
+    });
+  }
+
+  return Array.from(blockers.values()).toSorted((left, right) => left.pid - right.pid);
+}
+
+export function findLiveGatewayDistCleanBlockers(params = {}) {
+  const platform = params.platform ?? process.platform;
+  if (platform !== "darwin" && platform !== "linux") {
+    return [];
+  }
+  const spawnSyncImpl = params.spawnSync ?? spawnSync;
+  let result;
+  try {
+    result = spawnSyncImpl("ps", ["-axo", "pid=,command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: params.timeoutMs ?? LIVE_DIST_CLEAN_PS_TIMEOUT_MS,
+    });
+  } catch {
+    return [];
+  }
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+    return [];
+  }
+  return parseLiveGatewayDistCleanBlockers(result.stdout, params);
+}
+
+export function formatLiveDistCleanBlockerError(blockers, params = {}) {
+  const cwd = path.resolve(params.cwd ?? process.cwd());
+  return [
+    "[tsdown-build] Refusing to clean live OpenClaw runtime artifacts.",
+    `Checkout: ${cwd}`,
+    "A running gateway is using this checkout's dist/ tree:",
+    ...blockers.map((blocker) => `- pid ${blocker.pid}: ${blocker.command}`),
+    "Cleaning dist while that gateway is alive can strand lazy runtime imports and leave RPC half-responsive.",
+    "Safe path: stop the gateway, run the build, verify artifacts, then restart the gateway.",
+    `Emergency override: ${LIVE_DIST_CLEAN_OVERRIDE_ENV}=1 pnpm build`,
+  ].join("\n");
+}
+
+export function assertLiveDistCleanAllowed(params = {}) {
+  const env = params.env ?? process.env;
+  const blockers = findLiveGatewayDistCleanBlockers(params);
+  const override = env[LIVE_DIST_CLEAN_OVERRIDE_ENV] === "1";
+  if (blockers.length > 0 && !override) {
+    throw new Error(formatLiveDistCleanBlockerError(blockers, params));
+  }
+  return {
+    blockers,
+    override,
+  };
+}
 
 function removeDistPluginNodeModulesSymlinks(rootDir) {
   const extensionsDir = path.join(rootDir, "extensions");
@@ -433,6 +538,18 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
+  let liveDistCleanCheck;
+  try {
+    liveDistCleanCheck = assertLiveDistCleanAllowed();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+  if (liveDistCleanCheck.blockers.length > 0 && liveDistCleanCheck.override) {
+    console.error(
+      `[tsdown-build] ${LIVE_DIST_CLEAN_OVERRIDE_ENV}=1 set; cleaning dist while ${liveDistCleanCheck.blockers.length} gateway process(es) use this checkout.`,
+    );
+  }
   pruneSourceCheckoutBundledPluginNodeModules();
   pruneUntrackedGeneratedSourceDeclarations();
   pruneStaleRuntimeSymlinks();

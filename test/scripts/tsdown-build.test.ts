@@ -3,8 +3,11 @@ import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  assertLiveDistCleanAllowed,
   cleanTsdownOutputRoots,
   createTsdownOutputScanner,
+  findLiveGatewayDistCleanBlockers,
+  parseLiveGatewayDistCleanBlockers,
   pruneSourceCheckoutBundledPluginNodeModules,
   pruneStaleRootChunkFiles,
   pruneUntrackedGeneratedSourceDeclarations,
@@ -196,6 +199,62 @@ describe("resolveTsdownBuildInvocation", () => {
     await expectPathMissing(pluginGeneratedFile);
     await expectPathMissing(path.join(rootDir, "dist-runtime"));
     await expect(fsPromises.readFile(unrelatedFile, "utf8")).resolves.toBe("keep\n");
+  });
+
+  it("detects live gateways that are running from the same dist tree", () => {
+    const blockers = parseLiveGatewayDistCleanBlockers(
+      [
+        " 100 /usr/local/bin/node /repo/dist/index.js gateway --port 18789",
+        " 101 /usr/local/bin/node /other/dist/index.js gateway --port 18789",
+        " 102 /usr/local/bin/node /repo/dist/index.js health",
+      ].join("\n"),
+      { cwd: "/repo", pid: 999 },
+    );
+
+    expect(blockers).toEqual([
+      {
+        pid: 100,
+        command: "/usr/local/bin/node /repo/dist/index.js gateway --port 18789",
+        entry: "/repo/dist/index.js",
+      },
+    ]);
+  });
+
+  it("refuses to clean dist when a live gateway uses the checkout unless explicitly overridden", () => {
+    const spawnSync = vi.fn(() => ({
+      status: 0,
+      stdout: " 200 /usr/local/bin/node /repo/dist/index.js gateway --port 18789\n",
+    }));
+
+    expect(() =>
+      assertLiveDistCleanAllowed({
+        cwd: "/repo",
+        pid: 999,
+        platform: "darwin",
+        spawnSync,
+        env: {},
+      }),
+    ).toThrow(/Refusing to clean live OpenClaw runtime artifacts/u);
+
+    expect(
+      assertLiveDistCleanAllowed({
+        cwd: "/repo",
+        pid: 999,
+        platform: "darwin",
+        spawnSync,
+        env: { OPENCLAW_ALLOW_LIVE_DIST_CLEAN: "1" },
+      }),
+    ).toMatchObject({ override: true, blockers: [{ pid: 200 }] });
+  });
+
+  it("allows dist clean when process inspection is unavailable", () => {
+    const blockers = findLiveGatewayDistCleanBlockers({
+      cwd: "/repo",
+      platform: "darwin",
+      spawnSync: () => ({ status: 1, stdout: "" }),
+    });
+
+    expect(blockers).toEqual([]);
   });
 
   it("prunes untracked generated declaration files that shadow source entries", async () => {
