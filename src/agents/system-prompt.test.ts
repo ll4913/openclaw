@@ -152,6 +152,12 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain(
       "For long waits, avoid rapid poll loops: use exec with enough yieldMs or process(action=poll, timeout=<ms>).",
     );
+    expect(prompt).toContain(
+      "Network-restricted runs: prefer repo-local scripts/binaries and package-manager scripts; do not use `npx`/remote installers for routine tools unless the user explicitly asks or dependencies are missing and you report that.",
+    );
+    expect(prompt).toContain(
+      "Long commands such as formatters, type checks, builds, verify scripts, and git operations need a bounded timeout/polling plan; heartbeat or report progress before the runtime looks stalled.",
+    );
     expect(prompt).toContain("No independent goals");
     expect(prompt).toContain("Safety/oversight over completion");
     expect(prompt).toContain("Conflicts: pause/ask");
@@ -331,6 +337,8 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain(
       "For long waits, avoid rapid poll loops: use exec with enough yieldMs or process(action=poll, timeout=<ms>).",
     );
+    expect(prompt).toContain("do not use `npx`/remote installers for routine tools");
+    expect(prompt).toContain("heartbeat or report progress before the runtime looks stalled");
     expect(prompt).toContain("Larger work: use `sessions_spawn`; completion is push-based.");
     expect(prompt).toContain("Do not poll `subagents list` / `sessions_list` in a loop");
     expect(prompt).not.toContain("use `sessions_yield` when waiting");

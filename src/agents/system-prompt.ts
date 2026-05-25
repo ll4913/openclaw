@@ -1027,6 +1027,8 @@ export function buildAgentSystemPrompt(params: {
       ...(renderOpenClawToolWorkflowHints
         ? [
             `For long waits, avoid rapid poll loops: use ${execToolName} with enough yieldMs or ${processToolName}(action=poll, timeout=<ms>).`,
+            "Network-restricted runs: prefer repo-local scripts/binaries and package-manager scripts; do not use `npx`/remote installers for routine tools unless the user explicitly asks or dependencies are missing and you report that.",
+            "Long commands such as formatters, type checks, builds, verify scripts, and git operations need a bounded timeout/polling plan; heartbeat or report progress before the runtime looks stalled.",
             "Larger work: use `sessions_spawn`; completion is push-based.",
             '`sessions_spawn`: omit `context` unless transcript needed; then set `context:"fork"`.',
           ]
