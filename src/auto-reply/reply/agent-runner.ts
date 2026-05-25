@@ -96,6 +96,7 @@ import {
 import { createReplyMediaContext } from "./reply-media-paths.js";
 import {
   createReplyOperation,
+  markReplyOperationProgress,
   ReplyRunAlreadyActiveError,
   replyRunRegistry,
   type ReplyOperation,
@@ -1305,11 +1306,19 @@ export async function runReplyAgent(params: {
   };
   const prePreflightCompactionCount = activeSessionEntry?.compactionCount ?? 0;
   let preflightCompactionApplied = false;
+  const runTrackedAgentPhase = async <T>(name: string, run: () => Promise<T> | T): Promise<T> => {
+    markReplyOperationProgress(replyOperation, `${name}:start`);
+    try {
+      return await traceAgentPhase(name, run);
+    } finally {
+      markReplyOperationProgress(replyOperation, `${name}:end`);
+    }
+  };
 
   try {
     await typingSignals.signalRunStart();
 
-    activeSessionEntry = await traceAgentPhase("reply.preflight_compaction", () =>
+    activeSessionEntry = await runTrackedAgentPhase("reply.preflight_compaction", () =>
       runPreflightCompactionIfNeeded({
         cfg,
         followupRun,
@@ -1329,7 +1338,7 @@ export async function runReplyAgent(params: {
       (activeSessionEntry?.compactionCount ?? 0) > prePreflightCompactionCount;
 
     const visibleMemoryFlushErrorPayloads: ReplyPayload[] = [];
-    activeSessionEntry = await traceAgentPhase("reply.memory_flush", () =>
+    activeSessionEntry = await runTrackedAgentPhase("reply.memory_flush", () =>
       runMemoryFlushIfNeeded({
         cfg,
         followupRun,
@@ -1444,7 +1453,7 @@ export async function runReplyAgent(params: {
 
     replyOperation.setPhase("running");
     const runStartedAt = Date.now();
-    const runOutcome = await traceAgentPhase("reply.run_agent_turn", () =>
+    const runOutcome = await runTrackedAgentPhase("reply.run_agent_turn", () =>
       runAgentTurnWithFallback({
         commandBody,
         transcriptCommandBody,

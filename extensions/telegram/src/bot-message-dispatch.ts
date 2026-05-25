@@ -377,6 +377,8 @@ function formatProgressAsMarkdownCode(text: string): string {
 function logTelegramTurnLifecycle(params: {
   phase:
     | "received"
+    | "reply_dispatch_started"
+    | "reply_dispatch_done"
     | "final_delivery_started"
     | "final_delivery_done"
     | "turn_done"
@@ -1352,6 +1354,13 @@ export const dispatchTelegramMessage = async ({
     });
 
     try {
+      logTelegramTurnLifecycle({
+        phase: "reply_dispatch_started",
+        accountId: route.accountId,
+        agentId: route.agentId,
+        sessionKey: ctxPayload.SessionKey,
+        elapsedMs: Date.now() - dispatchStartedAt,
+      });
       const turnResult = await runInboundReplyTurn({
         channel: "telegram",
         accountId: route.accountId,
@@ -1802,6 +1811,14 @@ export const dispatchTelegramMessage = async ({
           }),
         },
       });
+      logTelegramTurnLifecycle({
+        phase: "reply_dispatch_done",
+        accountId: route.accountId,
+        agentId: route.agentId,
+        sessionKey: ctxPayload.SessionKey,
+        elapsedMs: Date.now() - dispatchStartedAt,
+        outcome: turnResult.dispatched ? "dispatched" : "skipped",
+      });
       if (!turnResult.dispatched) {
         return;
       }
@@ -1810,6 +1827,15 @@ export const dispatchTelegramMessage = async ({
         turnResult.dispatchResult.sourceReplyDeliveryMode === "message_tool_only";
     } catch (err) {
       dispatchError = err;
+      logTelegramTurnLifecycle({
+        phase: "reply_dispatch_done",
+        accountId: route.accountId,
+        agentId: route.agentId,
+        sessionKey: ctxPayload.SessionKey,
+        elapsedMs: Date.now() - dispatchStartedAt,
+        outcome: "error",
+        error: err,
+      });
       runtime.error?.(danger(`telegram dispatch failed: ${String(err)}`));
     } finally {
       progressDraftGate.cancel();

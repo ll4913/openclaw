@@ -1,3 +1,4 @@
+import { emitTrustedDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import {
   markDiagnosticEmbeddedRunEnded,
   markDiagnosticEmbeddedRunStarted,
@@ -208,6 +209,21 @@ function markReplyRunDiagnosticWorkStarted(params: {
   });
 }
 
+export function markReplyOperationProgress(
+  operation: Pick<ReplyOperation, "key" | "sessionId"> | undefined,
+  reason: string,
+): void {
+  if (!operation) {
+    return;
+  }
+  emitTrustedDiagnosticEvent({
+    type: "run.progress",
+    sessionKey: operation.key,
+    sessionId: operation.sessionId,
+    reason,
+  });
+}
+
 function markReplyRunDiagnosticWorkEnded(params: { sessionKey: string; sessionId: string }): void {
   markDiagnosticEmbeddedRunEnded({
     sessionId: params.sessionId,
@@ -310,6 +326,7 @@ export function createReplyOperation(params: {
         return;
       }
       phase = next;
+      markReplyOperationProgress(operation, `reply.operation:${next}`);
     },
     updateSessionId(nextSessionId) {
       if (result) {
@@ -334,6 +351,7 @@ export function createReplyOperation(params: {
       replyRunState.activeKeysBySessionId.set(currentSessionId, sessionKey);
       registerWaitSessionId(sessionKey, currentSessionId);
       markReplyRunDiagnosticWorkStarted({ sessionKey, sessionId: currentSessionId });
+      markReplyOperationProgress(operation, "reply.operation:session_rotated");
     },
     attachBackend(handle) {
       if (result) {
@@ -399,6 +417,7 @@ export function createReplyOperation(params: {
   replyRunState.activeKeysBySessionId.set(currentSessionId, sessionKey);
   registerWaitSessionId(sessionKey, currentSessionId);
   markReplyRunDiagnosticWorkStarted({ sessionKey, sessionId: currentSessionId });
+  markReplyOperationProgress(operation, "reply.operation:queued");
 
   return operation;
 }

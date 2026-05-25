@@ -50,7 +50,7 @@ import {
   toPluginMessageContext,
   toPluginMessageReceivedEvent,
 } from "../../hooks/message-hook-mappers.js";
-import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
+import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
@@ -859,6 +859,34 @@ export async function dispatchReplyFromConfig(
   // ACP routing uses acpDispatchSessionKey.
   const dispatchOperationSessionKey =
     initialSessionStoreEntry.sessionKey ?? sessionKey ?? acpDispatchSessionKey;
+  const recordReplyRunProgress = (reason: string) => {
+    if (!diagnosticsEnabled) {
+      return;
+    }
+    const progressSessionKeys = new Set(
+      [sessionKey, acpDispatchSessionKey, dispatchOperationSessionKey].filter(
+        (key): key is string => typeof key === "string" && key.length > 0,
+      ),
+    );
+    if (progressSessionKeys.size === 0) {
+      return;
+    }
+    for (const progressSessionKey of progressSessionKeys) {
+      emitTrustedDiagnosticEvent({
+        type: "run.progress",
+        sessionKey: progressSessionKey,
+        reason,
+      });
+    }
+  };
+  const runTrackedReplyPhase = async <T>(name: string, run: () => Promise<T> | T): Promise<T> => {
+    recordReplyRunProgress(`${name}:start`);
+    try {
+      return await traceReplyPhase(name, run);
+    } finally {
+      recordReplyRunProgress(`${name}:end`);
+    }
+  };
   const markProgress = () => {
     if (!canTrackSession || !sessionKey) {
       return;
@@ -963,10 +991,11 @@ export async function dispatchReplyFromConfig(
     dispatcher,
     isAborted: isDispatchOperationAborted,
   });
-  const { ensureRuntimePluginsLoaded } = await traceReplyPhase("reply.load_runtime_plugins", () =>
-    loadRuntimePlugins(),
+  const { ensureRuntimePluginsLoaded } = await runTrackedReplyPhase(
+    "reply.load_runtime_plugins",
+    () => loadRuntimePlugins(),
   );
-  await traceReplyPhase("reply.ensure_runtime_plugins", () => {
+  await runTrackedReplyPhase("reply.ensure_runtime_plugins", () => {
     ensureRuntimePluginsLoaded({ config: cfg, workspaceDir });
   });
   const hookRunner = getGlobalHookRunner();
@@ -1875,14 +1904,17 @@ export async function dispatchReplyFromConfig(
 
     const replyResolver =
       params.replyResolver ??
-      (await traceReplyPhase("reply.load_reply_resolver", () => loadGetReplyFromConfigRuntime()))
-        .getReplyFromConfig;
+      (
+        await runTrackedReplyPhase("reply.load_reply_resolver", () =>
+          loadGetReplyFromConfigRuntime(),
+        )
+      ).getReplyFromConfig;
     const replyConfig = withFullRuntimeReplyConfig(
       params.configOverride ? (applyMergePatch(cfg, params.configOverride) as OpenClawConfig) : cfg,
     );
     recordAgentDispatchStarted();
     const replyResult = await runWithReplyOperationAbort(dispatchAbortOperation, () =>
-      traceReplyPhase("reply.run_reply_resolver", () =>
+      runTrackedReplyPhase("reply.run_reply_resolver", () =>
         replyResolver(
           ctx,
           {

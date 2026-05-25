@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitForDiagnosticEventsDrained } from "../../infra/diagnostic-events.js";
 import {
   getDiagnosticSessionActivitySnapshot,
   resetDiagnosticRunActivityForTest,
@@ -56,28 +57,46 @@ describe("reply run registry", () => {
     }
   });
 
-  it("mirrors active reply operations into diagnostic work state", () => {
+  it("mirrors active reply operations into diagnostic work state", async () => {
     const operation = createReplyOperation({
       sessionKey: "agent:main:telegram:direct:chat-1",
       sessionId: "session-1",
       resetTriggered: false,
     });
+    await waitForDiagnosticEventsDrained();
 
     expect(
       getDiagnosticSessionActivitySnapshot({
         sessionId: "session-1",
         sessionKey: "agent:main:telegram:direct:chat-1",
-      }).activeWorkKind,
-    ).toBe("embedded_run");
+      }),
+    ).toMatchObject({
+      activeWorkKind: "embedded_run",
+      lastProgressReason: "reply.operation:queued",
+    });
 
     operation.updateSessionId("session-2");
+    await waitForDiagnosticEventsDrained();
 
     expect(
       getDiagnosticSessionActivitySnapshot({
         sessionId: "session-2",
         sessionKey: "agent:main:telegram:direct:chat-1",
-      }).activeWorkKind,
-    ).toBe("embedded_run");
+      }),
+    ).toMatchObject({
+      activeWorkKind: "embedded_run",
+      lastProgressReason: "reply.operation:session_rotated",
+    });
+
+    operation.setPhase("running");
+    await waitForDiagnosticEventsDrained();
+
+    expect(
+      getDiagnosticSessionActivitySnapshot({
+        sessionId: "session-2",
+        sessionKey: "agent:main:telegram:direct:chat-1",
+      }).lastProgressReason,
+    ).toBe("reply.operation:running");
 
     operation.complete();
 
