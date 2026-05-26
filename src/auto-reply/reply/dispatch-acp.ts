@@ -7,13 +7,20 @@ import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../..
 import { formatAcpRuntimeErrorText } from "../../acp/runtime/error-text.js";
 import { toAcpRuntimeError } from "../../acp/runtime/errors.js";
 import type { AcpRuntimeError } from "../../acp/runtime/errors.js";
-import { resolveAcpThreadSessionDetailLines } from "../../acp/runtime/session-identifiers.js";
+import {
+  resolveAcpSessionCwd,
+  resolveAcpThreadSessionDetailLines,
+} from "../../acp/runtime/session-identifiers.js";
 import {
   isSessionIdentityPending,
   resolveSessionIdentityFromMeta,
 } from "../../acp/runtime/session-identity.js";
 import type { AcpRuntimeEvent } from "../../acp/runtime/types.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import {
+  resolveThreadBindingIntroText,
+  resolveThreadBindingThreadName,
+} from "../../channels/thread-bindings-messages.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import { appendXPromptContext } from "../../content/prompt-context.js";
@@ -22,6 +29,7 @@ import { emitAgentEvent } from "../../infra/agent-events.js";
 import { logAgentTurnLifecycle } from "../../infra/agent-turn-lifecycle.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import { generateSecureUuid } from "../../infra/secure-random.js";
 import { prefixSystemMessage } from "../../infra/system-message.js";
 import { markDiagnosticSessionProgress } from "../../logging/diagnostic.js";
@@ -367,9 +375,63 @@ function buildAcpFailoverPrompt(params: {
   );
 }
 
+function resolveFailoverBindingLabel(agentId: string): string {
+  const normalizedAgentId = normalizeOptionalString(agentId) ?? "agent";
+  return `mc-${normalizedAgentId}`;
+}
+
+function normalizeBindingDurationMs(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return undefined;
+  }
+  return Math.max(0, Math.floor(raw));
+}
+
+function buildAcpFailoverBindingMetadata(params: {
+  binding: SessionBindingRecord;
+  fallbackAgentId: string;
+  fallbackSessionKey: string;
+  fallbackMeta?: SessionAcpMeta;
+}): Record<string, unknown> {
+  const existingMetadata = params.binding.metadata ?? {};
+  const fallbackLabel = resolveFailoverBindingLabel(params.fallbackAgentId);
+  const boundBy = normalizeOptionalString(existingMetadata.boundBy) ?? "system";
+  const idleTimeoutMs = normalizeBindingDurationMs(existingMetadata.idleTimeoutMs);
+  const maxAgeMs = normalizeBindingDurationMs(existingMetadata.maxAgeMs);
+  const metadata: Record<string, unknown> = {
+    agentId: params.fallbackAgentId,
+    label: fallbackLabel,
+    boundBy,
+    threadName: resolveThreadBindingThreadName({
+      agentId: params.fallbackAgentId,
+      label: fallbackLabel,
+    }),
+    introText: resolveThreadBindingIntroText({
+      agentId: params.fallbackAgentId,
+      label: fallbackLabel,
+      idleTimeoutMs,
+      maxAgeMs,
+      sessionCwd: resolveAcpSessionCwd(params.fallbackMeta),
+      sessionDetails: resolveAcpThreadSessionDetailLines({
+        sessionKey: params.fallbackSessionKey,
+        meta: params.fallbackMeta,
+      }),
+    }),
+  };
+  if (idleTimeoutMs !== undefined) {
+    metadata.idleTimeoutMs = idleTimeoutMs;
+  }
+  if (maxAgeMs !== undefined) {
+    metadata.maxAgeMs = maxAgeMs;
+  }
+  return metadata;
+}
+
 async function maybeRebindFailoverConversations(params: {
   fromSessionKey: string;
   toSessionKey: string;
+  fallbackAgentId: string;
+  fallbackMeta?: SessionAcpMeta;
 }): Promise<void> {
   try {
     const { getSessionBindingService } = await loadDispatchAcpManagerRuntime();
@@ -380,6 +442,12 @@ async function maybeRebindFailoverConversations(params: {
         targetSessionKey: params.toSessionKey,
         targetKind: "session",
         conversation: binding.conversation,
+        metadata: buildAcpFailoverBindingMetadata({
+          binding,
+          fallbackAgentId: params.fallbackAgentId,
+          fallbackSessionKey: params.toSessionKey,
+          fallbackMeta: params.fallbackMeta,
+        }),
       });
     }
     if (bindings.length > 0) {
@@ -491,6 +559,8 @@ async function tryRunAcpFailoverTurn(params: {
       await maybeRebindFailoverConversations({
         fromSessionKey: params.primarySessionKey,
         toSessionKey: fallbackSessionKey,
+        fallbackAgentId,
+        fallbackMeta: initialized?.meta,
       });
       try {
         await fallbackDelivery.startReplyLifecycle();

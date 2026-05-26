@@ -243,6 +243,137 @@ function summarizeLifecycleForLog(
   return `idle=${idleLabel} maxAge=${maxAgeLabel}`;
 }
 
+type AcpSessionEntryRead = NonNullable<ReturnType<typeof readAcpSessionEntry>>;
+
+function resolveAcpAgentIdFromSessionKey(sessionKey: string): string | undefined {
+  const match = /^agent:([^:]+):acp:/.exec(sessionKey.trim());
+  return normalizeOptionalString(match?.[1]);
+}
+
+function resolveLoadedAcpBindingThreadName(params: { agentId?: string; label?: string }): string {
+  const base =
+    normalizeOptionalString(params.label) ?? normalizeOptionalString(params.agentId) ?? "agent";
+  return `🤖 ${base}`.replace(/\s+/g, " ").trim().slice(0, 100);
+}
+
+function isAcpBindingLabelCompatibleWithAgent(params: {
+  label?: string;
+  agentId: string;
+}): boolean {
+  const label = normalizeOptionalString(params.label)?.toLowerCase();
+  const agentId = normalizeOptionalString(params.agentId)?.toLowerCase();
+  if (!label || !agentId) {
+    return false;
+  }
+  return label === agentId || label.includes(agentId);
+}
+
+function resolveLoadedAcpBindingLabel(params: {
+  record: TelegramThreadBindingRecord;
+  sessionEntry: AcpSessionEntryRead;
+  agentId: string;
+}): string {
+  const entryLabel = normalizeOptionalString(params.sessionEntry.entry?.label);
+  if (entryLabel) {
+    return entryLabel;
+  }
+  const recordLabel = normalizeOptionalString(params.record.label);
+  if (
+    recordLabel &&
+    isAcpBindingLabelCompatibleWithAgent({
+      label: recordLabel,
+      agentId: params.agentId,
+    })
+  ) {
+    return recordLabel;
+  }
+  return `mc-${params.agentId}`;
+}
+
+function resolveLoadedAcpBindingIntroText(params: {
+  agentId?: string;
+  label?: string;
+  idleTimeoutMs: number;
+  maxAgeMs: number;
+  sessionCwd?: string;
+}): string {
+  const base =
+    normalizeOptionalString(params.label) ?? normalizeOptionalString(params.agentId) ?? "agent";
+  const lifecycle: string[] = [];
+  if (params.idleTimeoutMs > 0) {
+    lifecycle.push(
+      `idle auto-unfocus after ${formatThreadBindingDurationLabel(params.idleTimeoutMs)} inactivity`,
+    );
+  }
+  if (params.maxAgeMs > 0) {
+    lifecycle.push(`max age ${formatThreadBindingDurationLabel(params.maxAgeMs)}`);
+  }
+  const intro =
+    lifecycle.length > 0
+      ? `${base} session active (${lifecycle.join("; ")}). Messages here go directly to this session.`
+      : `${base} session active. Messages here go directly to this session.`;
+  const cwd = normalizeOptionalString(params.sessionCwd);
+  return cwd ? `⚙️ ${intro}\ncwd: ${cwd}` : `⚙️ ${intro}`;
+}
+
+function repairLoadedAcpBindingFromSessionEntry(params: {
+  record: TelegramThreadBindingRecord;
+  sessionEntry: AcpSessionEntryRead;
+  defaultIdleTimeoutMs: number;
+  defaultMaxAgeMs: number;
+}): { record: TelegramThreadBindingRecord; changed: boolean } {
+  const agentId =
+    normalizeOptionalString(params.sessionEntry.acp?.agent) ??
+    resolveAcpAgentIdFromSessionKey(params.record.targetSessionKey);
+  if (!agentId) {
+    return { record: params.record, changed: false };
+  }
+
+  const label = resolveLoadedAcpBindingLabel({
+    record: params.record,
+    sessionEntry: params.sessionEntry,
+    agentId,
+  });
+  const idleTimeoutMs =
+    typeof params.record.idleTimeoutMs === "number"
+      ? Math.max(0, Math.floor(params.record.idleTimeoutMs))
+      : params.defaultIdleTimeoutMs;
+  const maxAgeMs =
+    typeof params.record.maxAgeMs === "number"
+      ? Math.max(0, Math.floor(params.record.maxAgeMs))
+      : params.defaultMaxAgeMs;
+  const nextMetadata: Record<string, unknown> = {
+    ...params.record.metadata,
+    agentId,
+    label,
+    boundBy: params.record.boundBy ?? params.record.metadata?.boundBy,
+    threadName: resolveLoadedAcpBindingThreadName({ agentId, label }),
+    introText: resolveLoadedAcpBindingIntroText({
+      agentId,
+      label,
+      idleTimeoutMs,
+      maxAgeMs,
+      sessionCwd:
+        normalizeOptionalString(params.sessionEntry.acp?.runtimeOptions?.cwd) ??
+        normalizeOptionalString(params.sessionEntry.acp?.cwd),
+    }),
+  };
+  const nextRecord: TelegramThreadBindingRecord = {
+    ...params.record,
+    agentId,
+    label,
+    metadata: nextMetadata,
+  };
+  const changed =
+    params.record.agentId !== nextRecord.agentId ||
+    params.record.label !== nextRecord.label ||
+    params.record.metadata?.agentId !== nextMetadata.agentId ||
+    params.record.metadata?.label !== nextMetadata.label ||
+    params.record.metadata?.threadName !== nextMetadata.threadName ||
+    params.record.metadata?.introText !== nextMetadata.introText;
+  return { record: changed ? nextRecord : params.record, changed };
+}
+
 function loadBindingsFromDisk(accountId: string): TelegramThreadBindingRecord[] {
   const filePath = resolveBindingsPath(accountId);
   try {
@@ -449,11 +580,13 @@ export function createTelegramThreadBindingManager(params: {
   }
 
   const staleSessionKeys = new Set<string>();
+  const sessionEntriesByKey = new Map<string, AcpSessionEntryRead>();
   for (const targetSessionKey of acpSessionKeys) {
     const sessionEntry = readAcpSessionEntry({ sessionKey: targetSessionKey });
     if (!sessionEntry || sessionEntry.storeReadFailed) {
       continue;
     }
+    sessionEntriesByKey.set(targetSessionKey, sessionEntry);
     const isStale =
       !sessionEntry.entry ||
       sessionEntry.entry.status === "failed" ||
@@ -466,6 +599,37 @@ export function createTelegramThreadBindingManager(params: {
   }
 
   let needsPersist = false;
+  for (const [sessionKey, sessionEntry] of sessionEntriesByKey) {
+    if (staleSessionKeys.has(sessionKey)) {
+      continue;
+    }
+    const bindingsToRepair = listBindingsForAccount(accountId).filter(
+      (b) => b.targetSessionKey === sessionKey,
+    );
+    for (const binding of bindingsToRepair) {
+      const repaired = repairLoadedAcpBindingFromSessionEntry({
+        record: binding,
+        sessionEntry,
+        defaultIdleTimeoutMs: idleTimeoutMs,
+        defaultMaxAgeMs: maxAgeMs,
+      });
+      if (!repaired.changed) {
+        continue;
+      }
+      getThreadBindingsState().bindingsByAccountConversation.set(
+        resolveBindingKey({
+          accountId,
+          conversationId: binding.conversationId,
+        }),
+        repaired.record,
+      );
+      needsPersist = true;
+      logVerbose(
+        `telegram thread binding: repaired metadata for ${binding.conversationId} -> ${sessionKey}`,
+      );
+    }
+  }
+
   for (const sessionKey of staleSessionKeys) {
     const bindingsToRemove = listBindingsForAccount(accountId).filter(
       (b) => b.targetSessionKey === sessionKey,

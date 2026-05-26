@@ -1822,6 +1822,13 @@ describe("tryDispatchAcpReply", () => {
         },
         status: "active",
         boundAt: 0,
+        metadata: {
+          agentId: "codex",
+          label: "mc-codex",
+          threadName: "🤖 mc-codex",
+          introText: "⚙️ mc-codex session active",
+          boundBy: "user-1",
+        },
       },
     ]);
 
@@ -1868,8 +1875,20 @@ describe("tryDispatchAcpReply", () => {
           channel: "telegram",
           conversationId: "thread-1",
         }),
+        metadata: expect.objectContaining({
+          agentId: "cursor",
+          label: "mc-cursor",
+          boundBy: "user-1",
+        }),
       }),
     );
+    const rebindMetadata = requireRecord(
+      bindingServiceMocks.bind.mock.calls[0]?.[0],
+      "rebind input",
+    ).metadata as Record<string, unknown>;
+    expect(String(rebindMetadata.threadName)).toContain("mc-cursor");
+    expect(String(rebindMetadata.introText)).toContain("mc-cursor");
+    expect(String(rebindMetadata.introText)).not.toContain("mc-codex");
     expect(
       routeMocks.routeReply.mock.calls.some((call) => {
         const payload = requireRecord(requireRecord(call[0], "route params").payload, "payload");

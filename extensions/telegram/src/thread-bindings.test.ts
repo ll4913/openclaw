@@ -433,6 +433,94 @@ describe("telegram thread bindings", () => {
     expect(readAcpSessionEntryMock).not.toHaveBeenCalled();
   });
 
+  it("repairs loaded ACP binding labels from the target session metadata", async () => {
+    stateDirOverride = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-telegram-bindings-"));
+    process.env.OPENCLAW_STATE_DIR = stateDirOverride;
+
+    const targetSessionKey = "agent:cursor:acp:cursor-session-1";
+    const bindingsPath = path.join(
+      resolveStateDir(process.env, os.homedir),
+      "telegram",
+      "thread-bindings-default.json",
+    );
+    fs.mkdirSync(path.dirname(bindingsPath), { recursive: true });
+    fs.writeFileSync(
+      bindingsPath,
+      JSON.stringify({
+        version: 1,
+        bindings: [
+          {
+            accountId: "default",
+            conversationId: "-1001:topic:2",
+            targetSessionKey,
+            targetKind: "acp",
+            boundAt: 1,
+            lastActivityAt: 2,
+            agentId: "claude",
+            label: "mc-claude",
+            boundBy: "user-1",
+            metadata: {
+              agentId: "claude",
+              label: "mc-claude",
+              boundBy: "user-1",
+              threadName: "🤖 mc-claude",
+              introText: "⚙️ mc-claude session active",
+            },
+          },
+        ],
+      }),
+    );
+    readAcpSessionEntryMock.mockReturnValue({
+      cfg: {} as never,
+      storePath: "/tmp/cursor-sessions.json",
+      sessionKey: targetSessionKey,
+      storeSessionKey: targetSessionKey,
+      entry: {
+        sessionId: "cursor-inner",
+        updatedAt: 3,
+      },
+      acp: {
+        backend: "acpx",
+        agent: "cursor",
+        runtimeSessionName: "cursor-runtime",
+        mode: "persistent",
+        runtimeOptions: {
+          cwd: "/Users/lianglin/Projects/mission-control",
+        },
+        cwd: "/Users/lianglin/Projects/mission-control",
+        state: "idle",
+        lastActivityAt: 3,
+      },
+      storeReadFailed: false,
+    });
+
+    const reloaded = createTelegramThreadBindingManager({
+      accountId: "default",
+      persist: true,
+      enableSweeper: false,
+    });
+
+    const repaired = reloaded.getByConversationId("-1001:topic:2");
+    expect(repaired?.agentId).toBe("cursor");
+    expect(repaired?.label).toBe("mc-cursor");
+    expect(repaired?.boundBy).toBe("user-1");
+    expect(repaired?.metadata?.threadName).toBe("🤖 mc-cursor");
+    expect(String(repaired?.metadata?.introText)).toContain("mc-cursor");
+    expect(String(repaired?.metadata?.introText)).not.toContain("mc-claude");
+    expect(String(repaired?.metadata?.introText)).toContain(
+      "cwd: /Users/lianglin/Projects/mission-control",
+    );
+    await flushMicrotasks();
+    const persistCall = writeJsonFileAtomicallyMock.mock.calls.at(-1);
+    expect(persistCall?.[0]).toBe(bindingsPath);
+    const persisted = persistCall?.[1] as {
+      bindings?: Array<{ agentId?: string; label?: string; metadata?: Record<string, unknown> }>;
+    };
+    expect(persisted.bindings?.[0]?.agentId).toBe("cursor");
+    expect(persisted.bindings?.[0]?.label).toBe("mc-cursor");
+    expect(persisted.bindings?.[0]?.metadata?.threadName).toBe("🤖 mc-cursor");
+  });
+
   it("keeps ACP bindings when the session store cannot be read during startup cleanup", async () => {
     stateDirOverride = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-telegram-bindings-"));
     process.env.OPENCLAW_STATE_DIR = stateDirOverride;
