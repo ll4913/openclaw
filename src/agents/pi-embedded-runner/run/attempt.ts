@@ -302,6 +302,8 @@ import { resolveAttemptWorkspaceBootstrapRouting } from "./attempt-bootstrap-rou
 import { configureEmbeddedAttemptHttpRuntime } from "./attempt-http-runtime.js";
 import {
   createEmbeddedRunStageTracker,
+  findEmbeddedRunPrepBudgetBreaches,
+  formatEmbeddedRunPrepBudgetBreach,
   formatEmbeddedRunPrepProgress,
   formatEmbeddedRunStageSummary,
   shouldLogEmbeddedRunPrepProgress,
@@ -1341,6 +1343,7 @@ export async function runEmbeddedAttempt(
     const yieldPrep = async () => {
       await yieldEmbeddedRunPrep();
     };
+    const reportedPrepBudgetBreaches = new Set<string>();
     const notePrepProgress = async (reason: string) => {
       emitTrustedDiagnosticEvent({
         type: "run.progress",
@@ -1348,6 +1351,41 @@ export async function runEmbeddedAttempt(
         reason,
       });
       const summary = prepStages.snapshot();
+      const prepBudgetBreaches = findEmbeddedRunPrepBudgetBreaches(summary);
+      for (const breach of prepBudgetBreaches) {
+        if (reportedPrepBudgetBreaches.has(breach.key)) {
+          continue;
+        }
+        reportedPrepBudgetBreaches.add(breach.key);
+        const breachReason =
+          breach.kind === "stage"
+            ? `embedded_run:prep_budget_exceeded:${breach.stage.name}`
+            : "embedded_run:prep_budget_exceeded:total";
+        emitTrustedDiagnosticEvent({
+          type: "run.progress",
+          ...diagnosticRunBase,
+          reason: breachReason,
+        });
+        const messageChannel = params.messageChannel ?? params.messageProvider;
+        log.warn(
+          formatEmbeddedRunPrepBudgetBreach(
+            [
+              "[trace:embedded-run] prep budget exceeded:",
+              `runId=${params.runId}`,
+              `sessionId=${params.sessionId}`,
+              params.sessionKey ? `sessionKey=${params.sessionKey}` : "",
+              `agentId=${sessionAgentId}`,
+              `provider=${params.provider}`,
+              `model=${params.modelId}`,
+              messageChannel ? `channel=${messageChannel}` : "",
+              `reason=${reason}`,
+            ]
+              .filter(Boolean)
+              .join(" "),
+            breach,
+          ),
+        );
+      }
       if (
         shouldLogEmbeddedRunPrepProgress({
           reason,

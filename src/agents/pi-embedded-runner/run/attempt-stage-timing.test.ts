@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   createEmbeddedRunStageTracker,
+  findEmbeddedRunPrepBudgetBreaches,
   EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE,
+  formatEmbeddedRunPrepBudgetBreach,
   formatEmbeddedRunPrepProgress,
   formatEmbeddedRunStageSummary,
   shouldLogEmbeddedRunPrepProgress,
@@ -105,6 +107,54 @@ describe("embedded run stage timing", () => {
       }),
     ).toBe(
       "prep reason=embedded_run:prep:bundle-tools elapsedMs=1000 lastStage=bundle-tools:990ms@1000ms",
+    );
+  });
+
+  it("reports total and per-stage prep budget breaches", () => {
+    const breaches = findEmbeddedRunPrepBudgetBreaches(
+      {
+        totalMs: 21_000,
+        stages: [
+          { name: "bootstrap-files", durationMs: 12_000, elapsedMs: 12_000 },
+          { name: "bundle-mcp-tools", durationMs: 4_000, elapsedMs: 16_000 },
+        ],
+      },
+      {
+        totalBudgetMs: 20_000,
+        defaultStageBudgetMs: 10_000,
+        stageBudgetsMs: {
+          "bundle-mcp-tools": 3_000,
+        },
+      },
+    );
+
+    expect(breaches).toEqual([
+      {
+        actualMs: 21_000,
+        budgetMs: 20_000,
+        kind: "total",
+        key: "total",
+        overByMs: 1_000,
+      },
+      {
+        actualMs: 12_000,
+        budgetMs: 8_000,
+        kind: "stage",
+        key: "stage:bootstrap-files",
+        overByMs: 4_000,
+        stage: { name: "bootstrap-files", durationMs: 12_000, elapsedMs: 12_000 },
+      },
+      {
+        actualMs: 4_000,
+        budgetMs: 3_000,
+        kind: "stage",
+        key: "stage:bundle-mcp-tools",
+        overByMs: 1_000,
+        stage: { name: "bundle-mcp-tools", durationMs: 4_000, elapsedMs: 16_000 },
+      },
+    ]);
+    expect(formatEmbeddedRunPrepBudgetBreach("budget", breaches[1]!)).toBe(
+      "budget kind=stage stage=bootstrap-files actualMs=12000 budgetMs=8000 overByMs=4000 elapsedMs=12000",
     );
   });
 
