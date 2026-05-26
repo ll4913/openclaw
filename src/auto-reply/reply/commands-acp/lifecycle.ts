@@ -43,6 +43,7 @@ import {
   type SessionBindingRecord,
   type SessionBindingService,
 } from "../../../infra/outbound/session-binding-service.js";
+import { resolveMcAcpSpawnCwd } from "../../../integrations/mission-control/acp-cwd-redirect.js";
 import { normalizeOptionalString } from "../../../shared/string-coerce.js";
 import type { ReplyPayload } from "../../types.js";
 import type { CommandHandlerResult, HandleCommandsParams } from "../commands-types.js";
@@ -519,6 +520,18 @@ export async function handleAcpSpawnAction(
   const acpManager = getAcpSessionManager();
   const sessionKey = `agent:${spawn.agentId}:acp:${randomUUID()}`;
 
+  const cwdRedirect = await resolveMcAcpSpawnCwd({
+    requestedCwd: spawn.cwd,
+    label: spawn.label,
+    conversationId: resolveAcpCommandConversationId(params),
+    threadId: resolveAcpCommandThreadId(params),
+    sessionKey,
+  });
+  const effectiveCwd = cwdRedirect.cwd ?? spawn.cwd;
+  if (effectiveCwd) {
+    spawn.cwd = effectiveCwd;
+  }
+
   let initializedBackend = "";
   let initializedMeta: SessionAcpMeta | undefined;
   let initializedRuntime: AcpSpawnRuntimeCloseHandle | undefined;
@@ -528,7 +541,7 @@ export async function handleAcpSpawnAction(
       sessionKey,
       agent: spawn.agentId,
       mode: spawn.mode,
-      cwd: spawn.cwd,
+      cwd: effectiveCwd,
     });
     initializedRuntime = {
       runtime: initialized.runtime,
@@ -607,6 +620,9 @@ export async function handleAcpSpawnAction(
   const parts = [
     `✅ Spawned ACP session ${sessionKey} (${spawn.mode}, backend ${initializedBackend}).`,
   ];
+  if (cwdRedirect.redirected && effectiveCwd) {
+    parts.push(`Cwd redirected to ${effectiveCwd} (MC isolated worktree).`);
+  }
   if (binding) {
     const currentConversationId =
       normalizeOptionalString(resolveAcpCommandConversationId(params)) ?? "";

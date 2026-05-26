@@ -33,6 +33,7 @@ const hoisted = vi.hoisted(() => {
   const setModeMock = vi.fn();
   const setConfigOptionMock = vi.fn();
   const doctorMock = vi.fn();
+  const resolveMcAcpSpawnCwdMock = vi.fn();
   return {
     callGatewayMock,
     requireAcpRuntimeBackendMock,
@@ -57,6 +58,7 @@ const hoisted = vi.hoisted(() => {
     setModeMock,
     setConfigOptionMock,
     doctorMock,
+    resolveMcAcpSpawnCwdMock,
   };
 });
 
@@ -97,6 +99,10 @@ vi.mock("../../agents/acp-spawn.js", () => ({
     params.cfg?.agents?.defaults?.sandbox?.mode === "all"
       ? 'Sandboxed sessions cannot spawn ACP sessions because runtime="acp" runs on the host. Use runtime="subagent" from sandboxed sessions.'
       : undefined,
+}));
+
+vi.mock("../../integrations/mission-control/acp-cwd-redirect.js", () => ({
+  resolveMcAcpSpawnCwd: (input: unknown) => hoisted.resolveMcAcpSpawnCwdMock(input),
 }));
 
 vi.mock("../../config/sessions.js", async () => {
@@ -962,6 +968,13 @@ describe("/acp command", () => {
       ok: true,
       message: "acpx command available",
     });
+    hoisted.resolveMcAcpSpawnCwdMock
+      .mockReset()
+      .mockImplementation(async (input: { requestedCwd?: string }) => ({
+        redirected: false,
+        cwd: input.requestedCwd,
+        requestedCwd: input.requestedCwd,
+      }));
 
     const runtimeBackend = {
       id: "acpx",
@@ -1185,6 +1198,40 @@ describe("/acp command", () => {
     const seededWithoutEntry = upsertArgs?.mutate(undefined, undefined);
     expect(seededWithoutEntry?.backend).toBe("acpx");
     expect(seededWithoutEntry?.runtimeSessionName).toContain(":runtime");
+  });
+
+  it("redirects Mission Control default checkout cwd to an isolated worktree on spawn", async () => {
+    hoisted.ensureSessionMock.mockResolvedValueOnce({
+      sessionKey: "agent:codex:acp:s1",
+      backend: "acpx",
+      runtimeSessionName: "agent:codex:acp:s1:runtime",
+      agentSessionId: "codex-inner-1",
+      backendSessionId: "acpx-1",
+    });
+    hoisted.resolveMcAcpSpawnCwdMock.mockResolvedValueOnce({
+      redirected: true,
+      requestedCwd: "/Users/lianglin/Projects/mission-control",
+      cwd: "/private/tmp/mc-acp/label-mc-claude",
+      bindingKey: "label:mc-claude",
+      reason: "default_checkout_redirect",
+    });
+
+    const result = await runDiscordAcpCommand(
+      "/acp spawn codex --bind here --cwd /Users/lianglin/Projects/mission-control --label mc-claude",
+    );
+
+    expect(hoisted.resolveMcAcpSpawnCwdMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedCwd: "/Users/lianglin/Projects/mission-control",
+        label: "mc-claude",
+      }),
+    );
+    expectMockCallFields(hoisted.ensureSessionMock, {
+      agent: "codex",
+      mode: "persistent",
+      cwd: "/private/tmp/mc-acp/label-mc-claude",
+    });
+    expect(result?.reply?.text).toContain("Cwd redirected to /private/tmp/mc-acp/label-mc-claude");
   });
 
   it("persists ACP spawn labels without a nested gateway self-call", async () => {
