@@ -18,9 +18,10 @@ if [[ "$BRANCH" != "main" ]]; then
   exit 0
 fi
 
-# Check if we're in a worktree (worktrees have their own .git file, not dir)
-GIT_DIR="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
-if [[ -f "$GIT_DIR" ]]; then
+# Check if we're in a worktree.
+# In a worktree, .git at the worktree root is a file (not a directory).
+WORKTREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [[ -f "$WORKTREE_ROOT/.git" ]]; then
   # This is a worktree, allow commits
   exit 0
 fi
