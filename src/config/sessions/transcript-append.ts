@@ -223,6 +223,13 @@ async function withTranscriptAppendQueue<T>(
   }
 }
 
+export async function withSessionTranscriptAppendQueue<T>(
+  transcriptPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return await withTranscriptAppendQueue(transcriptPath, fn);
+}
+
 type AppendSessionTranscriptMessageParams<TMessage = unknown> = {
   transcriptPath: string;
   message: TMessage;
@@ -389,4 +396,10 @@ async function findTranscriptMessageByIdempotencyKey(
     }
   }
   return undefined;
+}
+
+export async function appendSessionTranscriptMessageInCriticalSection<TMessage>(
+  params: AppendSessionTranscriptMessageParams<TMessage>,
+): Promise<{ messageId: string; message: TMessage }> {
+  return await appendSessionTranscriptMessageLocked(params);
 }
