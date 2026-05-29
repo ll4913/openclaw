@@ -202,6 +202,14 @@ type CronTerminalRecovery = {
   terminalSummary?: string;
 };
 
+type TaskTerminalRecovery = {
+  status: Extract<TaskStatus, "succeeded" | "failed" | "timed_out" | "cancelled">;
+  endedAt: number;
+  lastEventAt: number;
+  error?: string;
+  terminalSummary?: string;
+};
+
 type CronRecoveryContext = {
   storePath: string;
   store?: CronStoreFile | null;
@@ -303,13 +311,21 @@ function findTaskSessionEntry(
   task: TaskRecord,
   context?: BackingSessionLookupContext,
 ): SessionEntry | undefined {
-  const childSessionKey = task.childSessionKey?.trim();
-  if (!childSessionKey) {
+  return findSessionEntryForTaskKey(task.childSessionKey, context);
+}
+
+function findSessionEntryForTaskKey(
+  sessionKey: string | null | undefined,
+  context?: BackingSessionLookupContext,
+): SessionEntry | undefined {
+  const normalizedSessionKey = sessionKey?.trim();
+  if (!normalizedSessionKey) {
     return undefined;
   }
-  const agentId = taskRegistryMaintenanceRuntime.parseAgentSessionKey(childSessionKey)?.agentId;
+  const agentId =
+    taskRegistryMaintenanceRuntime.parseAgentSessionKey(normalizedSessionKey)?.agentId;
   const storePath = taskRegistryMaintenanceRuntime.resolveStorePath(undefined, { agentId });
-  return findSessionEntryByKey(getSessionStoreLookup(storePath, context), childSessionKey);
+  return findSessionEntryByKey(getSessionStoreLookup(storePath, context), normalizedSessionKey);
 }
 
 function isActiveTask(task: TaskRecord): boolean {
@@ -462,6 +478,52 @@ function resolveDurableCronTaskRecovery(
   return (
     resolveCronRunLogRecovery(execution, context) ?? resolveCronJobStateRecovery(execution, context)
   );
+}
+
+function isDeferredContextMaintenanceTask(task: TaskRecord): boolean {
+  return task.runtime === "acp" && task.taskKind === "context_engine_turn_maintenance";
+}
+
+function isTerminalSessionEntry(entry: SessionEntry | undefined): boolean {
+  return (
+    entry?.status === "done" ||
+    entry?.status === "failed" ||
+    entry?.status === "killed" ||
+    entry?.status === "timeout"
+  );
+}
+
+function findOwningSessionEntry(
+  task: TaskRecord,
+  context?: BackingSessionLookupContext,
+): SessionEntry | undefined {
+  return (
+    findSessionEntryForTaskKey(task.childSessionKey, context) ??
+    findSessionEntryForTaskKey(task.ownerKey, context) ??
+    findSessionEntryForTaskKey(task.requesterSessionKey, context)
+  );
+}
+
+function resolveTerminalSessionTaskRecovery(
+  task: TaskRecord,
+  now: number,
+  context: BackingSessionLookupContext,
+): TaskTerminalRecovery | undefined {
+  if (!isActiveTask(task) || !hasLostGraceExpired(task, now)) {
+    return undefined;
+  }
+  if (!isDeferredContextMaintenanceTask(task)) {
+    return undefined;
+  }
+  if (!isTerminalSessionEntry(findOwningSessionEntry(task, context))) {
+    return undefined;
+  }
+  return {
+    status: "cancelled",
+    endedAt: now,
+    lastEventAt: now,
+    terminalSummary: "Deferred maintenance cancelled after the owning session completed.",
+  };
 }
 
 function hasActiveCliRun(task: TaskRecord): boolean {
@@ -790,7 +852,7 @@ function markTaskLost(
   return updated;
 }
 
-function markTaskRecovered(task: TaskRecord, recovery: CronTerminalRecovery): TaskRecord {
+function markTaskRecovered(task: TaskRecord, recovery: TaskTerminalRecovery): TaskRecord {
   const updated =
     taskRegistryMaintenanceRuntime.markTaskTerminalById({
       taskId: task.taskId,
@@ -806,7 +868,7 @@ function markTaskRecovered(task: TaskRecord, recovery: CronTerminalRecovery): Ta
   return updated;
 }
 
-function projectTaskRecovered(task: TaskRecord, recovery: CronTerminalRecovery): TaskRecord {
+function projectTaskRecovered(task: TaskRecord, recovery: TaskTerminalRecovery): TaskRecord {
   const projected: TaskRecord = {
     ...task,
     status: recovery.status,
@@ -855,6 +917,14 @@ function reconcileTaskRecordForOperatorInspectionWithContexts(
     return projectTaskRecovered(task, cronRecovery);
   }
   const now = Date.now();
+  const terminalSessionRecovery = resolveTerminalSessionTaskRecovery(
+    task,
+    now,
+    backingSessionContext,
+  );
+  if (terminalSessionRecovery) {
+    return projectTaskRecovered(task, terminalSessionRecovery);
+  }
   if (!shouldMarkLost(task, now, backingSessionContext)) {
     return task;
   }
@@ -975,6 +1045,10 @@ export function previewTaskRegistryMaintenance(): TaskRegistryMaintenanceSummary
       recovered += 1;
       continue;
     }
+    if (resolveTerminalSessionTaskRecovery(task, now, backingSessionContext)) {
+      recovered += 1;
+      continue;
+    }
     if (shouldMarkLost(task, now, backingSessionContext)) {
       reconciled += 1;
       continue;
@@ -1040,6 +1114,9 @@ export function getTaskRegistryMaintenanceDiagnostics(): TaskRegistryMaintenance
     if (resolveDurableCronTaskRecovery(task, cronRecoveryContext)) {
       continue;
     }
+    if (resolveTerminalSessionTaskRecovery(task, now, backingSessionContext)) {
+      continue;
+    }
     const decision = explainActiveTaskRetention({ task, now, context: backingSessionContext });
     staleRunningTasks.push({
       taskId: task.taskId,
@@ -1096,6 +1173,22 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
     const cronRecovery = resolveDurableCronTaskRecovery(current, cronRecoveryContext);
     if (cronRecovery) {
       const next = markTaskRecovered(current, cronRecovery);
+      if (next.status !== current.status) {
+        recovered += 1;
+      }
+      processed += 1;
+      if (processed % SWEEP_YIELD_BATCH_SIZE === 0) {
+        await yieldToEventLoop();
+      }
+      continue;
+    }
+    const terminalSessionRecovery = resolveTerminalSessionTaskRecovery(
+      current,
+      now,
+      backingSessionContext,
+    );
+    if (terminalSessionRecovery) {
+      const next = markTaskRecovered(current, terminalSessionRecovery);
       if (next.status !== current.status) {
         recovered += 1;
       }

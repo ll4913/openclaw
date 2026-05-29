@@ -420,6 +420,49 @@ describe("task-registry maintenance issue #60299", () => {
     expect(storedTask.terminalSummary).toBe("done");
   });
 
+  it("cancels stale deferred maintenance tasks once the owning session completed", async () => {
+    const sessionKey = "agent:tenderbot:telegram:group:-1003797037995:topic:841";
+    const task = makeStaleTask({
+      runtime: "acp",
+      taskKind: "context_engine_turn_maintenance",
+      sourceId: "context_engine_turn_maintenance",
+      requesterSessionKey: sessionKey,
+      ownerKey: sessionKey,
+      scopeKind: "session",
+      childSessionKey: undefined,
+      runId: `turn-maint:${sessionKey}:test`,
+      label: "Context engine turn maintenance",
+      task: "Deferred context-engine maintenance after turn.",
+      notifyPolicy: "state_changes",
+      deliveryStatus: "pending",
+    });
+
+    const { currentTasks } = createTaskRegistryMaintenanceHarness({
+      tasks: [task],
+      sessionStore: {
+        [sessionKey]: {
+          sessionId: "session-done",
+          updatedAt: Date.now(),
+          status: "done",
+          endedAt: Date.now() - 30_000,
+        },
+      },
+    });
+
+    const reconciledTasks = reconcileInspectableTasks();
+    expect(reconciledTasks).toHaveLength(1);
+    expect(reconciledTasks[0]?.taskId).toBe(task.taskId);
+    expect(reconciledTasks[0]?.status).toBe("cancelled");
+    expectMaintenanceCounts(previewTaskRegistryMaintenance(), { reconciled: 0, recovered: 1 });
+    expect(getTaskRegistryMaintenanceDiagnostics().staleRunningTasks).toHaveLength(0);
+    expectMaintenanceCounts(await runTaskRegistryMaintenance(), { reconciled: 0, recovered: 1 });
+    const storedTask = requireTaskRecord(currentTasks, task.taskId);
+    expect(storedTask.status).toBe("cancelled");
+    expect(storedTask.terminalSummary).toBe(
+      "Deferred maintenance cancelled after the owning session completed.",
+    );
+  });
+
   it("recovers interrupted cron tasks from durable cron job state when run logs are absent", async () => {
     const startedAt = Date.now() - GRACE_EXPIRED_MS;
     const task = makeStaleTask({
