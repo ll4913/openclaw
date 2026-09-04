@@ -92,6 +92,49 @@ describe("channel ingress drain watchdog", () => {
     });
   });
 
+  it("does not complete a late dispatch result after a handler-timeout fence", async () => {
+    await withTempState(async (stateDir) => {
+      let clock = 10_000;
+      const queue = createTestIngressQueue(stateDir, { now: () => clock });
+      await queue.enqueue("evt-false-complete", { text: "x" }, { laneKey: "l1" });
+      let releaseDispatch!: () => void;
+      const holdDispatch = new Promise<void>((resolve) => {
+        releaseDispatch = resolve;
+      });
+
+      const drain = createChannelIngressDrain<Payload>({
+        queue,
+        now: () => clock,
+        adoptionStallTimeoutMs: 5_000,
+        dispatchClaimedEvent: async () => {
+          await holdDispatch;
+          return { kind: "completed" };
+        },
+      });
+
+      await drain.drainOnce();
+      clock += 5_000;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(async () => expect(await queue.listClaims()).toEqual([]));
+      releaseDispatch();
+      await drain.waitForIdle();
+      clock += 15_000;
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
+      expect(await queue.listPending({ limit: "all" })).toMatchObject([
+        {
+          id: "evt-false-complete",
+          attempts: 1,
+          lastError: expect.stringContaining("handler-timeout"),
+        },
+      ]);
+      const again = await queue.enqueue("evt-false-complete", { text: "x" });
+      expect(again.kind).not.toBe("completed");
+      drain.dispose();
+    });
+  });
+
   it("rearms a live deferred wait, then guillotines silence", async () => {
     await withTempState(async (stateDir) => {
       let clock = 30_000;

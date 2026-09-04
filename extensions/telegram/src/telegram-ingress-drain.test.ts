@@ -446,6 +446,101 @@ describe("createTelegramIngressMonitor", () => {
     });
   });
 
+  it("does not write a completed tombstone after a handler-timeout fence plus deferred abort", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
+        channelId: "telegram",
+        accountId: "engineer",
+        stateDir,
+      });
+      const eventId = "188447965".padStart(16, "0");
+      const payload = updatePayload(18_844_7965);
+      const laneKey = telegramSpooledUpdateLaneKey(payload.update);
+      await queue.enqueue(eventId, payload, { laneKey });
+      const participant: { current?: TelegramSpooledReplayDeferredParticipant } = {};
+      let ownerSignal: AbortSignal | undefined;
+      const logs: string[] = [];
+      const monitor = createTelegramIngressMonitor({
+        queue,
+        cfg,
+        accountId: "engineer",
+        adoptionStallTimeoutMs: 40,
+        dispatch: async (_update, lifecycle) => {
+          ownerSignal = lifecycle.abortSignal;
+          participant.current =
+            createTelegramSpooledReplayDeferredParticipant("test:handler-timeout-fence") ??
+            undefined;
+        },
+        onLog: (message) => logs.push(message),
+      });
+
+      monitor.start();
+      await vi.waitFor(() => expect(participant.current).toBeDefined());
+      await vi.waitFor(() => expect(ownerSignal?.aborted).toBe(true));
+      await vi.waitFor(() =>
+        expect(logs.some((line) => line.includes("handler-timeout"))).toBe(true),
+      );
+
+      participant.current?.settle({ kind: "skipped" });
+      await vi.waitFor(async () => expect(await queue.listClaims()).toEqual([]));
+
+      // False-completion sentinel: no completed tombstone in the fence window.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const status = await queue.enqueue(eventId, payload, { laneKey });
+      expect(status.kind).not.toBe("completed");
+      expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
+      expect(await queue.listPending({ limit: "all" })).toMatchObject([
+        {
+          id: eventId,
+          lastError: expect.stringContaining("handler-timeout"),
+        },
+      ]);
+      await monitor.stop();
+    });
+  });
+
+  it("maps abort-owned skipped dispatch to failed-retryable instead of a completed tombstone", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
+        channelId: "telegram",
+        accountId: "engineer",
+        stateDir,
+      });
+      const eventId = "188447979".padStart(16, "0");
+      const payload = updatePayload(18_844_7979);
+      const laneKey = telegramSpooledUpdateLaneKey(payload.update);
+      await queue.enqueue(eventId, payload, { laneKey });
+      const monitor = createTelegramIngressMonitor({
+        queue,
+        cfg,
+        accountId: "engineer",
+        adoptionStallTimeoutMs: 40,
+        dispatch: async (_update, lifecycle) => {
+          const deferred =
+            createTelegramSpooledReplayDeferredParticipant("test:abort-skipped") ?? undefined;
+          if (!lifecycle.abortSignal.aborted) {
+            await new Promise<void>((resolve) => {
+              lifecycle.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+            });
+          }
+          deferred?.settle({ kind: "skipped" });
+          return { kind: "skipped" as const };
+        },
+      });
+
+      monitor.start();
+      await vi.waitFor(async () => expect(await queue.listClaims()).toEqual([]));
+      expect((await queue.enqueue(eventId, payload, { laneKey })).kind).not.toBe("completed");
+      expect(await queue.listPending({ limit: "all" })).toMatchObject([
+        {
+          id: eventId,
+          lastError: expect.stringContaining("handler-timeout"),
+        },
+      ]);
+      await monitor.stop();
+    });
+  });
+
   it("tombstones completed dispatch results", async () => {
     await withTempState(async (stateDir) => {
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({

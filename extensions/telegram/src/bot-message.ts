@@ -455,15 +455,17 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
           return settledResult;
         }
         if (turnAbortSignal.aborted) {
+          // Drain guillotine/supersede abort is retryable. "skipped" is only
+          // for channel-owned cancel (debounce /stop), never an ingress fence.
           const abortResult: TelegramMessageProcessingResult =
-            turnAbortSignal.reason === "skipped"
-              ? { kind: "skipped" }
-              : {
+            drainLifecycle?.abortSignal.aborted || turnAbortSignal.reason !== "skipped"
+              ? {
                   kind: "failed-retryable",
                   error:
                     turnAbortSignal.reason ??
                     new Error("telegram spooled replay owner cancelled before adoption"),
-                };
+                }
+              : { kind: "skipped" };
           return await settle(abortResult, "terminal");
         }
         if (adoptionAttempted && !deferred && result.kind === "completed") {
@@ -509,14 +511,14 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
           }
           if (turnAbortSignal.aborted && !participant.abortSignal.aborted) {
             const abortResult: TelegramMessageProcessingResult =
-              turnAbortSignal.reason === "skipped"
-                ? { kind: "skipped" }
-                : {
+              drainLifecycle?.abortSignal.aborted || turnAbortSignal.reason !== "skipped"
+                ? {
                     kind: "failed-retryable",
                     error:
                       turnAbortSignal.reason ??
                       new Error("telegram spooled replay owner cancelled"),
-                  };
+                  }
+                : { kind: "skipped" };
             participant.settle(abortResult);
           }
           return await participant.task;

@@ -341,6 +341,15 @@ export function createChannelIngressDrain<
         state.phase = "adopted";
         clearStallTimer(state);
         await state.settleOnce(async () => {
+          // Re-check after the settle mutex: a fence may have claimed the
+          // write while this adoption awaited. Completing here would drop a
+          // released retryable event (false-completion after handler-timeout).
+          if (state.guillotined) {
+            throw new IngressAdoptionLostError("guillotined");
+          }
+          if (state.superseded) {
+            throw new IngressAdoptionLostError("superseded");
+          }
           await completeClaimWithRetry(state.claim);
         });
       },
@@ -488,6 +497,9 @@ export function createChannelIngressDrain<
           state.phase = "adopted";
           clearStallTimer(state);
           await state.settleOnce(async () => {
+            if (state.guillotined || state.superseded) {
+              return;
+            }
             await completeClaimWithRetry(claim);
           });
         }
