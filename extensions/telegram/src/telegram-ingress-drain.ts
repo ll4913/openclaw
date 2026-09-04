@@ -396,7 +396,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
             .then(
               async (terminal) => {
                 removeAbortListener();
-                if (abortedWhilePending) {
+                if (abortedWhilePending || telegramLifecycle.abortSignal.aborted) {
                   await settleAfterOwnerAbort(
                     terminal.kind === "failed-retryable" ? terminal.error : undefined,
                   );
@@ -410,7 +410,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
               },
               async (error: unknown) => {
                 removeAbortListener();
-                if (abortedWhilePending) {
+                if (abortedWhilePending || telegramLifecycle.abortSignal.aborted) {
                   await settleAfterOwnerAbort(error);
                   return;
                 }

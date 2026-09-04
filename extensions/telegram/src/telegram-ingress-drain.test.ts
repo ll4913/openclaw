@@ -510,6 +510,7 @@ describe("createTelegramIngressMonitor", () => {
       const payload = updatePayload(18_844_7979);
       const laneKey = telegramSpooledUpdateLaneKey(payload.update);
       await queue.enqueue(eventId, payload, { laneKey });
+      const logs: string[] = [];
       const monitor = createTelegramIngressMonitor({
         queue,
         cfg,
@@ -526,11 +527,17 @@ describe("createTelegramIngressMonitor", () => {
           deferred?.settle({ kind: "skipped" });
           return { kind: "skipped" as const };
         },
+        onLog: (message) => logs.push(message),
       });
 
       monitor.start();
+      await vi.waitFor(() =>
+        expect(logs.some((line) => line.includes("handler-timeout"))).toBe(true),
+      );
       await vi.waitFor(async () => expect(await queue.listClaims()).toEqual([]));
+      await new Promise((resolve) => setTimeout(resolve, 20));
       expect((await queue.enqueue(eventId, payload, { laneKey })).kind).not.toBe("completed");
+      expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
       expect(await queue.listPending({ limit: "all" })).toMatchObject([
         {
           id: eventId,
